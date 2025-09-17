@@ -6,7 +6,7 @@ from picamera2 import Picamera2
 app = Flask(__name__)
 
 picam2 = Picamera2()
-picam2.configure(picam2.still_configuration(buffer_count=2))
+picam2.configure(picam2.create_still_configuration(buffer_count=1))
 picam2.start()
 
 @app.route('/capture')
