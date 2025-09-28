@@ -1,63 +1,45 @@
 #!/usr/bin/env python3
 
 import subprocess
-import re
-import sys
 
-# Settings
-PI_IP = "192.168.7.2"
+INTERFACE = "usb0"
 HOST_IP = "192.168.7.1"
+PI_IP = "192.168.7.2"
 SUBNET = "192.168.7.0/24"
 
-def run(cmd, capture_output=True):
-    result = subprocess.run(cmd, shell=True, capture_output=capture_output, text=True)
-    if result.returncode != 0 and not capture_output:
-        print(f"[ERROR] Command failed: {cmd}")
+def run(cmd):
+    print(f"[cmd] {cmd}")
+    result = subprocess.run(cmd, shell=True, text=True, capture_output=True)
+    if result.returncode != 0:
+        print(f"[ERROR] {result.stderr.strip()}")
     return result.stdout.strip()
 
-def find_usb_interface():
-    output = run("ip link show")
-    pattern = re.compile(r"\d+: (\S+):.*?link/ether ([0-9a-f:]{17})", re.MULTILINE)
+def setup_usb_interface():
+    print(f"[INFO] Configuring {INTERFACE}...")
 
-    for match in pattern.finditer(output):
-        iface, mac = match.groups()
-        if iface.startswith("enx") or iface.startswith("usb"):
-            # Optional: exclude Wi-Fi adapters (common for built-in chips)
-            if "wlan" not in iface and "eth" not in iface:
-                return iface
-    return None
+    # Flush any existing IP addresses
+    run(f"sudo ip addr flush dev {INTERFACE}")
 
-def configure_interface(iface):
-    print(f"[INFO] Found USB gadget interface: {iface}")
-
-    # Flush existing IPs
-    print("[INFO] Flushing existing IPs...")
-    run(f"sudo ip addr flush dev {iface}")
-
-    # Assign IP
-    print(f"[INFO] Assigning {HOST_IP}/24 to {iface}...")
-    run(f"sudo ip addr add {HOST_IP}/24 dev {iface}")
+    # Assign our IP
+    run(f"sudo ip addr add {HOST_IP}/24 dev {INTERFACE}")
 
     # Bring interface up
-    print("[INFO] Bringing interface up...")
-    run(f"sudo ip link set {iface} up")
+    run(f"sudo ip link set {INTERFACE} up")
 
-    # Add route (if needed)
+    # Add route if not present
     routes = run("ip route")
     if SUBNET not in routes:
-        print("[INFO] Adding route...")
-        run(f"sudo ip route add {SUBNET} dev {iface}")
+        run(f"sudo ip route add {SUBNET} dev {INTERFACE}")
     else:
         print("[INFO] Route already exists.")
 
-    print(f"Ready to ping Pi at {PI_IP}!")
+    # Test connectivity
+    print("[INFO] Trying to ping the Raspberry Pi...")
+    ping_result = run(f"ping -c 3 {PI_IP}")
+    print(ping_result)
 
-def main():
-    iface = find_usb_interface()
-    if not iface:
-        print("Could not find USB gadget interface. Is the Pi connected and powered?")
-        sys.exit(1)
-    configure_interface(iface)
+    print(f"USB network interface {INTERFACE} is ready.")
 
 if __name__ == "__main__":
-    main()
+    setup_usb_interface()
+    
