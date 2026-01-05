@@ -8,8 +8,8 @@ p = digitalio.DigitalInOut(board.C0)
 p.direction = digitalio.Direction.OUTPUT
 
 p.value = False
-duration = 60  # total time in seconds
-interval = 10  # toggle interval in seconds
+duration = 600  # total time in seconds
+interval = 5  # toggle interval in seconds
 
 try:
     for i in range(0, duration, interval):
