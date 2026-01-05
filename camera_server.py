@@ -27,7 +27,7 @@ def index():
     <img id="frame" src="/capture" />
     <script>
       const img = document.getElementById('frame');
-      const intervalMs = 300; // adjust (e.g. 100–1000)
+      const intervalMs = 2000; // adjust (e.g. 100–1000)
       function refresh() {
         // cache-buster to force a new fetch each time
         img.src = "/capture?t=" + Date.now();
@@ -54,4 +54,3 @@ def capture():
 if __name__ == '__main__':
     # threaded=True helps if multiple browser requests overlap
     app.run(host='0.0.0.0', port=8000, threaded=True)
-    
