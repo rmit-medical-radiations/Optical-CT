@@ -3,7 +3,8 @@ import time
 
 # Configure the serial port settings
 ser = serial.Serial(
-    port='/dev/ttyUSB1',
+    # port='/dev/ttyUSB1',
+    port='/dev/tty.usbserial-A9TKD8CR',
     baudrate=9600,
     bytesize=serial.EIGHTBITS,
     parity=serial.PARITY_NONE,
