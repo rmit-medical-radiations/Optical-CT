@@ -3,7 +3,7 @@ import cv2.aruco as aruco
 from PIL import Image
 
 # Board parameters
-squaresX, squaresY = 7, 10
+squaresX, squaresY = 5, 5
 square_size_mm = 25.0
 marker_size_mm = 18.75
 
@@ -24,13 +24,14 @@ height_px = int(squaresY * square_size_mm * mm_to_inch * dpi)
 
 img = board.generateImage((width_px, height_px))
 
-cv2.imwrite("charuco_7x10_25mm.png", img)
+name = f"charuco_{squaresX}x{squaresY}_{int(square_size_mm)}mm"
+cv2.imwrite(f"{name}.png", img)
 
 # Save PDF
 Image.fromarray(img).save(
-    "charuco_7x10_25mm_A4.pdf",
+    f"{name}_A4.pdf",
     "PDF",
     resolution=dpi
 )
 
-print("Generated Charuco board")
+print(f"saved board to {name}")
