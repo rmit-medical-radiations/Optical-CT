@@ -1,7 +1,12 @@
 import serial
 import time
-import math
-import subprocess
+import requests
+import cv2
+import numpy as np
+from os.path import expanduser
+import os
+import shutil
+
 
 SERIAL_PORT = "/dev/ttyUSB0"
 BAUDRATE = 9600
@@ -14,7 +19,16 @@ STEPS_PER_REV = FULL_STEPS_PER_REV * MICROSTEPS
 DEGREE_INCREMENT = 10
 NUM_POSITIONS = int(360 / DEGREE_INCREMENT)
 
-MOTION_STATUS_VAR = "MV"  # <-- if your unit uses a different one, change this
+MOTION_STATUS_VAR = "MV"
+
+# Address of the Pi camera server
+CAMERA_URL = "http://192.168.7.2:8000/capture"
+
+IMAGE_DIR = f"{expanduser('~')}/Downloads/oct_images"
+if os.path.exists(IMAGE_DIR):
+    shutil.rmtree(IMAGE_DIR)
+os.makedirs(IMAGE_DIR)
+
 
 def send(ser, cmd: str):
     ser.write((cmd + "\r").encode("ascii"))
@@ -49,9 +63,28 @@ def wait_until_stopped(ser, poll_s=0.05, timeout_s=10.0):
         time.sleep(poll_s)
 
 def take_photo(index: int, angle_deg: int):
-    filename = f"img_{index:02d}_{angle_deg:03d}deg.jpg"
-    # subprocess.run(["libcamera-still", "-n", "-o", filename], check=False)
-    # print(f"Captured {filename}")
+    filename = f"img_{index:02d}_{angle_deg:03d}deg.png"
+    try:
+        response = requests.get(CAMERA_URL, timeout=5)
+        response.raise_for_status()
+
+        img_array = np.frombuffer(response.content, dtype=np.uint8)
+        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+
+        if image is None:
+            raise ValueError("Failed to decode image")
+
+        # Resize to 512x512
+        image_512 = cv2.resize(image, (512, 512), interpolation=cv2.INTER_AREA)
+
+        # Save as PNG
+        cv2.imwrite(f'{IMAGE_DIR}/{filename}', image_512)
+
+        return image_512
+
+    except (requests.RequestException, ValueError) as e:
+        print(f"[Error] Image fetch failed: {e}")
+        return None
 
 with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
     time.sleep(0.5)
