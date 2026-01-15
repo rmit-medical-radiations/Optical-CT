@@ -15,6 +15,10 @@ TIMEOUT = 1
 FULL_STEPS_PER_REV = 200
 MICROSTEPS = 16
 STEPS_PER_REV = FULL_STEPS_PER_REV * MICROSTEPS
+INITIAL_VELOCITY = 2000  # steps per second
+MAX_VELOCITY = 4000
+ACCELERATION = 20000
+DECELERATION = 20000
 
 DEGREE_INCREMENT = 10
 NUM_POSITIONS = int(360 / DEGREE_INCREMENT)
@@ -89,8 +93,13 @@ def take_photo(index: int, angle_deg: int):
 with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
     time.sleep(0.5)
 
-    # Microstep resolution
-    send(ser, f"MS {MICROSTEPS}")
+    # Set up initial parameters
+    send(ser, f"MS={MICROSTEPS}")
+    send(ser, f"VI={INITIAL_VELOCITY}")
+    send(ser, f"VM={MAX_VELOCITY}")
+    send(ser, f"A={ACCELERATION}")
+    send(ser, f"D={DECELERATION}")
+    send(ser, f"P=0")
 
     # Print current position
     print("Current position:", query(ser, "PR P"))
