@@ -3,7 +3,7 @@ import requests
 import numpy as np
 import time
 
-# Address of your Pi camera server
+# Address of the Pi camera server
 CAMERA_URL = "http://192.168.7.2:8000/capture"
 
 def fetch_image():
