@@ -60,7 +60,7 @@ def is_moving(ser) -> bool:
         print('is_moving parse failed')
         return True
 
-def wait_until_stopped(ser, dn_char="!", timeout_s=10.0):
+def wait_until_stopped(ser, dn_char=DEVICE_NAME, timeout_s=10.0):
     t0 = time.time()
     buffer = ""
 
@@ -115,9 +115,6 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
     send(ser, f"RC={RUN_CURRENT}")
     send(ser, f"P=0")
 
-    # Print current position
-    print("Current position:", query(ser, "PR P"))
-
     # --- Scan ---
     for i in range(NUM_POSITIONS):
         angle = i * DEGREE_INCREMENT
@@ -137,4 +134,4 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
 
     # Return to 0°
     send(ser, "MA 0")
-    wait_until_stopped(ser)
+    wait_until_stopped(ser, dn_char=DEVICE_NAME)
