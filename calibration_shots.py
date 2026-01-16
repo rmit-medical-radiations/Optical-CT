@@ -92,6 +92,7 @@ try:
                 break
             elif key == ' ':
                 take_photo(index=i, crop=crop)
+                print(f'image {i}')
                 i += 1
 
 finally:
