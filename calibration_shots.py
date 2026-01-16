@@ -1,3 +1,4 @@
+import numpy as np
 import requests
 import cv2
 from os.path import expanduser
