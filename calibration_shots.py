@@ -3,6 +3,7 @@ import cv2
 from os.path import expanduser
 import os
 import shutil
+import time
 
 # Address of the Pi camera server
 CAMERA_URL = "http://192.168.7.2:8000/capture"
@@ -66,5 +67,7 @@ crop = {'top':60, 'bottom':20, 'left':20, 'right':20}
 
 i = 0
 while True:
+    time.sleep(0.5)
     take_photo(index=i, crop=crop)
     i += 1
+    print(f'image {i}')
