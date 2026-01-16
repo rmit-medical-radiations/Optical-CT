@@ -13,13 +13,13 @@ BAUDRATE = 9600
 TIMEOUT = 1
 
 FULL_STEPS_PER_REV = 200
-MICROSTEPS = 16
+MICROSTEPS = 256                                    # MS
 STEPS_PER_REV = FULL_STEPS_PER_REV * MICROSTEPS
-INITIAL_VELOCITY = 50  # steps per second
-MAX_VELOCITY = 1000
-ACCELERATION = 10000
-DECELERATION = 10000
-RUN_CURRENT = 25
+INITIAL_VELOCITY = 50                               # VI (steps per second)
+MAX_VELOCITY = 768000                               # VM
+ACCELERATION = 10000                                # A
+DECELERATION = 10000                                # D
+RUN_CURRENT = 100                                   # RC (percent)
 
 DEGREE_INCREMENT = 20
 NUM_POSITIONS = int(360 / DEGREE_INCREMENT)
@@ -102,6 +102,7 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
     send(ser, f"VM={MAX_VELOCITY}")
     send(ser, f"A={ACCELERATION}")
     send(ser, f"D={DECELERATION}")
+    send(ser, f"RC={RUN_CURRENT}")
     send(ser, f"P=0")
 
     # Print current position
