@@ -27,9 +27,16 @@ def kv_dict(s):
 parser = argparse.ArgumentParser()
 parser.add_argument('--degree_increments', type=positive_int, default=10, help='Degree increments.', required=False)
 parser.add_argument('--display_overlay', action='store_true', help='Show an overlay on the image for debugging.', required=False)
-parser.add_argument("--crop", nargs="*", type=kv_dict, default=[], help="Crop margins: --crop top=2 bottom=7 left=6 right=8")
+parser.add_argument("--crop", nargs="*", type=kv_dict, default=[], help="Crop margins: --crop top=100 bottom=60 left=60 right=60")
 args = parser.parse_args()
 crop = dict(args.crop) if args.crop else None
+
+REQUIRED = {"top", "bottom", "left", "right"}
+
+if crop is not None:
+    missing = REQUIRED - crop.keys()
+    if missing:
+        raise ValueError(f"Missing crop keys: {missing}")
 
 SERIAL_PORT = "/dev/ttyUSB0"
 BAUDRATE = 9600
