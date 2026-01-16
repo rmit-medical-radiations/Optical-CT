@@ -27,7 +27,7 @@ def index():
     <img id="frame" src="/capture" />
     <script>
       const img = document.getElementById('frame');
-      const intervalMs = 2000; // adjust (e.g. 100–1000)
+      const intervalMs = 200; // adjust (e.g. 100–1000)
       function refresh() {
         // cache-buster to force a new fetch each time
         img.src = "/capture?t=" + Date.now();
