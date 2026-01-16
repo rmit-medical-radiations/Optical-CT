@@ -4,8 +4,10 @@ from os.path import expanduser
 import os
 import shutil
 import time
-import keyboard
-
+import sys
+import termios
+import tty
+import select
 
 # Address of the Pi camera server
 CAMERA_URL = "http://192.168.7.2:8000/capture"
@@ -68,18 +70,28 @@ def take_photo(index: int, crop: dict[str, int] | None = None):
 crop = {'top':60, 'bottom':20, 'left':20, 'right':20}
 
 
-print("Press SPACE to continue, Q to quit")
+def get_key():
+    if select.select([sys.stdin], [], [], 0)[0]:
+        return sys.stdin.read(1)
+    return None
 
-i = 0
-while True:
-    if keyboard.is_pressed('q'):
-        print("Exiting")
-        break
+fd = sys.stdin.fileno()
+old_settings = termios.tcgetattr(fd)
 
-    if keyboard.is_pressed('space'):
-        take_photo(index=i, crop=crop)
-        i += 1
-        # debounce so it doesn’t trigger repeatedly
-        time.sleep(0.3)
+try:
+    tty.setcbreak(fd)   # immediate key reads, no Enter
+    print("Press SPACE to continue, Q to quit")
 
-    time.sleep(0.01)
+    i = 0
+    while True:
+        key = get_key()
+        if key:
+            if key == 'q':
+                print("Exiting")
+                break
+            elif key == ' ':
+                take_photo(index=i, crop=crop)
+                i += 1
+
+finally:
+    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
