@@ -15,10 +15,21 @@ def positive_int(value):
         raise argparse.ArgumentTypeError(f"Expected integer ≥ 1, got {value}")
     return ivalue
 
+def kv_dict(s):
+    try:
+        key, value = s.split("=")
+        return key, int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "Expected key=value (e.g. top=2)"
+        )
+    
 parser = argparse.ArgumentParser()
-parser.add_argument('-di','--degree_increments', type=positive_int, default=10, help='Degree increments.', required=False)
+parser.add_argument('--degree_increments', type=positive_int, default=10, help='Degree increments.', required=False)
+parser.add_argument('--display_overlay', action='store_true', help='Show an overlay on the image for debugging.', required=False)
+parser.add_argument("--crop", nargs="*", type=kv_dict, default=[], help="Crop margins: --crop top=2 bottom=7 left=6 right=8")
 args = parser.parse_args()
-
+crop = dict(args.crop) if args.crop else None
 
 SERIAL_PORT = "/dev/ttyUSB0"
 BAUDRATE = 9600
@@ -89,7 +100,48 @@ def wait_until_stopped(ser, dn_char=DEVICE_NAME, timeout_s=10.0):
             if dn_char in buffer:
                 return
 
-def take_photo(index: int, angle_deg: int):
+def overlay_grid(
+    image,
+    step=20,
+    color=(0, 255, 0),
+    thickness=1
+):
+    """
+    Overlay a grid from the origin (top-left) in step-pixel increments.
+    """
+    h, w = image.shape[:2]
+
+    # Vertical lines (x direction)
+    for x in range(0, w, step):
+        cv2.line(image, (x, 0), (x, h), color, thickness)
+
+    # Horizontal lines (y direction)
+    for y in range(0, h, step):
+        cv2.line(image, (0, y), (w, y), color, thickness)
+
+    return image
+
+def crop_borders(
+    image,
+    top=0,
+    bottom=0,
+    left=0,
+    right=0
+):
+    """
+    Crop pixels from each border with safety checks.
+    """
+    h, w = image.shape[:2]
+
+    if top + bottom >= h or left + right >= w:
+        raise ValueError("Crop dimensions exceed image size")
+
+    return image[
+        top : h - bottom,
+        left : w - right
+    ]
+
+def take_photo(index: int, angle_deg: int, overlay=False, crop: dict[str, int] | None = None):
     filename = f"img_{index:02d}_{angle_deg:03d}deg.png"
     try:
         response = requests.get(CAMERA_URL, timeout=5)
@@ -104,6 +156,14 @@ def take_photo(index: int, angle_deg: int):
         # Resize to 512x512
         image_512 = cv2.resize(image, (512, 512), interpolation=cv2.INTER_AREA)
 
+        # Apply overlay if required
+        if overlay:
+            image_512 = overlay_grid(image_512, color=(0, 255, 0), thickness=1)
+
+        # Apply cropping if required
+        if crop is not None:
+            image_512 = crop_borders(image_512, top=crop['top'], bottom=crop['bottom'], left=crop['left'], right=crop['right'])
+
         # Save as PNG
         cv2.imwrite(f'{IMAGE_DIR}/{filename}', image_512)
 
@@ -112,8 +172,6 @@ def take_photo(index: int, angle_deg: int):
     except (requests.RequestException, ValueError) as e:
         print(f"[Error] Image fetch failed: {e}")
         return None
-
-
 
 
 with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
@@ -145,7 +203,7 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
         # Settle time for vibration/rig flex
         time.sleep(0.5)
 
-        take_photo(i, angle)
+        take_photo(index=i, angle_deg=angle, overlay=args.display_overlay, crop=crop)
 
     # Return to 0°
     send(ser, "MA 0")
