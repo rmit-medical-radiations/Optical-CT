@@ -94,6 +94,7 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
     time.sleep(0.5)
 
     # Set up initial parameters
+    send(ser, f"EE=0")                  # disable encoder
     send(ser, f"MS={MICROSTEPS}")
     send(ser, f"VI={INITIAL_VELOCITY}")
     send(ser, f"VM={MAX_VELOCITY}")
@@ -108,6 +109,7 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
     for i in range(NUM_POSITIONS):
         angle = i * DEGREE_INCREMENT
         target_steps = round((angle / 360.0) * STEPS_PER_REV)
+        print(f'position {i}, angle {angle}, target steps {target_steps}')
 
         # Move Absolute (MA)
         send(ser, f"MA {target_steps}")
