@@ -4,6 +4,8 @@ from os.path import expanduser
 import os
 import shutil
 import time
+import keyboard
+
 
 # Address of the Pi camera server
 CAMERA_URL = "http://192.168.7.2:8000/capture"
@@ -65,9 +67,19 @@ def take_photo(index: int, crop: dict[str, int] | None = None):
 
 crop = {'top':60, 'bottom':20, 'left':20, 'right':20}
 
+
+print("Press SPACE to continue, Q to quit")
+
 i = 0
 while True:
-    time.sleep(0.5)
-    take_photo(index=i, crop=crop)
-    i += 1
-    print(f'image {i}')
+    if keyboard.is_pressed('q'):
+        print("Exiting")
+        break
+
+    if keyboard.is_pressed('space'):
+        take_photo(index=i, crop=crop)
+        i += 1
+        # debounce so it doesn’t trigger repeatedly
+        time.sleep(0.3)
+
+    time.sleep(0.01)
