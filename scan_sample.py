@@ -23,7 +23,7 @@ def kv_dict(s):
         raise argparse.ArgumentTypeError(
             "Expected key=value (e.g. top=2)"
         )
-    
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--degree_increments', type=positive_int, default=10, help='Degree increments.', required=False)
 parser.add_argument('--display_overlay', action='store_true', help='Show an overlay on the image for debugging.', required=False)
