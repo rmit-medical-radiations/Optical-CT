@@ -6,6 +6,18 @@ import numpy as np
 from os.path import expanduser
 import os
 import shutil
+import argparse
+
+
+def positive_int(value):
+    ivalue = int(value)
+    if ivalue < 1:
+        raise argparse.ArgumentTypeError(f"Expected integer ≥ 1, got {value}")
+    return ivalue
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-di','--degree_increments', type=positive_int, default=10, help='Degree increments.', required=False)
+args = parser.parse_args()
 
 
 SERIAL_PORT = "/dev/ttyUSB0"
@@ -22,7 +34,7 @@ DECELERATION = 10000                                # D
 RUN_CURRENT = 100                                   # RC (percent)
 DEVICE_NAME = 'A'
 
-DEGREE_INCREMENT = 20
+DEGREE_INCREMENT = args.degree_increments
 NUM_POSITIONS = int(360 / DEGREE_INCREMENT)
 
 MOTION_STATUS_VAR = "MV"
@@ -100,6 +112,9 @@ def take_photo(index: int, angle_deg: int):
     except (requests.RequestException, ValueError) as e:
         print(f"[Error] Image fetch failed: {e}")
         return None
+
+
+
 
 with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
     time.sleep(0.5)
