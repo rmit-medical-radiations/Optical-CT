@@ -15,12 +15,13 @@ TIMEOUT = 1
 FULL_STEPS_PER_REV = 200
 MICROSTEPS = 16
 STEPS_PER_REV = FULL_STEPS_PER_REV * MICROSTEPS
-INITIAL_VELOCITY = 100  # steps per second
+INITIAL_VELOCITY = 50  # steps per second
 MAX_VELOCITY = 1000
 ACCELERATION = 10000
 DECELERATION = 10000
+RUN_CURRENT = 25
 
-DEGREE_INCREMENT = 10
+DEGREE_INCREMENT = 20
 NUM_POSITIONS = int(360 / DEGREE_INCREMENT)
 
 MOTION_STATUS_VAR = "MV"
@@ -39,7 +40,7 @@ def send(ser, cmd: str):
     ser.flush()
 
 def query(ser, cmd: str) -> str:
-    """Send a command and read one line back (best-effort)."""
+    """Send a command and read response."""
     send(ser, cmd)
     # Some units echo; some end with \r\n; be tolerant:
     line = ser.readline().decode(errors="ignore").strip()
@@ -55,6 +56,7 @@ def is_moving(ser) -> bool:
         return val != 0
     except ValueError:
         # If parsing fails, fall back to short wait + assume still moving
+        print('is_moving parse failed')
         return True
 
 def wait_until_stopped(ser, poll_s=0.05, timeout_s=10.0):
