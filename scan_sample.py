@@ -20,6 +20,7 @@ MAX_VELOCITY = 768000                               # VM
 ACCELERATION = 10000                                # A
 DECELERATION = 10000                                # D
 RUN_CURRENT = 100                                   # RC (percent)
+DEVICE_NAME = 'A'
 
 DEGREE_INCREMENT = 20
 NUM_POSITIONS = int(360 / DEGREE_INCREMENT)
@@ -59,14 +60,22 @@ def is_moving(ser) -> bool:
         print('is_moving parse failed')
         return True
 
-def wait_until_stopped(ser, poll_s=0.05, timeout_s=10.0):
+def wait_until_stopped(ser, dn_char="!", timeout_s=10.0):
     t0 = time.time()
+    buffer = ""
+
     while True:
-        if not is_moving(ser):
-            return
         if time.time() - t0 > timeout_s:
-            raise TimeoutError("Motor did not stop within timeout")
-        time.sleep(poll_s)
+            raise TimeoutError("Timed out waiting for DN (move complete)")
+
+        if ser.in_waiting:
+            data = ser.read(ser.in_waiting).decode(errors="ignore")
+            buffer += data
+
+            # print(repr(data))
+
+            if dn_char in buffer:
+                return
 
 def take_photo(index: int, angle_deg: int):
     filename = f"img_{index:02d}_{angle_deg:03d}deg.png"
@@ -96,7 +105,8 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
     time.sleep(0.5)
 
     # Set up initial parameters
-    send(ser, f"EE=0")                  # disable encoder
+    send(ser, f"EE=0")
+    send(ser, f"DN={DEVICE_NAME}")
     send(ser, f"MS={MICROSTEPS}")
     send(ser, f"VI={INITIAL_VELOCITY}")
     send(ser, f"VM={MAX_VELOCITY}")
@@ -115,10 +125,10 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
         print(f'position {i}, angle {angle}, target steps {target_steps}')
 
         # Move Absolute (MA)
-        send(ser, f"MA {target_steps}")
+        send(ser, f"MA {target_steps},1")
 
-        # Wait for motion to finish (poll)
-        wait_until_stopped(ser, poll_s=0.05, timeout_s=10.0)
+        # Wait for motion to finish
+        wait_until_stopped(ser, dn_char=DEVICE_NAME)
 
         # Settle time for vibration/rig flex
         time.sleep(0.2)
