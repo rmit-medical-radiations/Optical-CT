@@ -182,7 +182,6 @@ def crop_borders(
     ]
 
 def take_photo(index: int, angle_deg: int, overlay=False, crop: dict[str, int] | None = None):
-    filename = f"img_{index:02d}_{angle_deg:03d}deg.png"
     try:
         response = requests.get(CAMERA_URL, timeout=5)
         response.raise_for_status()
@@ -254,7 +253,9 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
             borderMode=cv2.BORDER_CONSTANT
         )
 
-        cv2.imwrite(IMAGE_DIR, undistorted)
+        # write the image
+        filename = f"img_{i:02d}_{angle:03d}deg.png"
+        cv2.imwrite(f"{IMAGE_DIR}/{filename}", undistorted)
 
 
     # Return to 0°
