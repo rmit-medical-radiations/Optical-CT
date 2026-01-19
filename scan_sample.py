@@ -9,6 +9,10 @@ import shutil
 import argparse
 import json
 
+os.environ['BLINKA_FT232H'] = '1'
+import board
+import digitalio
+
 
 def positive_int(value):
     ivalue = int(value)
@@ -224,6 +228,11 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
     send(ser, f"RC={RUN_CURRENT}")
     send(ser, f"P=0")
 
+    # turn lamp on
+    p = digitalio.DigitalInOut(board.C0)
+    p.direction = digitalio.Direction.OUTPUT
+    p.value = True
+
     # --- Scan ---
     for i in range(NUM_POSITIONS):
         angle = i * DEGREE_INCREMENT
@@ -257,6 +266,8 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
         filename = f"img_{i:02d}_{angle:03d}deg.png"
         cv2.imwrite(f"{IMAGE_DIR}/{filename}", undistorted)
 
+    # turn lamp off
+    p.value = False
 
     # Return to 0°
     send(ser, "MA 0")
