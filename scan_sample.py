@@ -7,6 +7,7 @@ from os.path import expanduser
 import os
 import shutil
 import argparse
+import json
 
 
 def positive_int(value):
@@ -27,16 +28,8 @@ def kv_dict(s):
 parser = argparse.ArgumentParser()
 parser.add_argument('--degree_increments', type=positive_int, default=10, help='Degree increments.', required=False)
 parser.add_argument('--display_overlay', action='store_true', help='Show an overlay on the image for debugging.', required=False)
-parser.add_argument("--crop", nargs="*", type=kv_dict, default=[], help="Crop margins: --crop top=100 bottom=60 left=60 right=60")
 args = parser.parse_args()
-crop = dict(args.crop) if args.crop else None
 
-REQUIRED = {"top", "bottom", "left", "right"}
-
-if crop is not None:
-    missing = REQUIRED - crop.keys()
-    if missing:
-        raise ValueError(f"Missing crop keys: {missing}")
 
 SERIAL_PORT = "/dev/ttyUSB0"
 BAUDRATE = 9600
@@ -60,10 +53,50 @@ MOTION_STATUS_VAR = "MV"
 # Address of the Pi camera server
 CAMERA_URL = "http://192.168.7.2:8000/capture"
 
+BORDER_CROPS = {'top':60, 'bottom':20, 'left':20, 'right':20}
+RESIZE_HEIGHT = 512
+RESIZE_WIDTH = 512
+CALIBRATED_HEIGHT = RESIZE_HEIGHT - BORDER_CROPS['top'] - BORDER_CROPS['bottom']
+CALIBRATED_WIDTH = RESIZE_WIDTH - BORDER_CROPS['left'] - BORDER_CROPS['right']
+
 IMAGE_DIR = f"{expanduser('~')}/Downloads/oct_images"
 if os.path.exists(IMAGE_DIR):
     shutil.rmtree(IMAGE_DIR)
 os.makedirs(IMAGE_DIR)
+
+# -----------------------------
+# Load calibration
+# -----------------------------
+CALIB_JSON = "camera_calibration_charuco.json"
+with open(CALIB_JSON, "r") as f:
+    calib = json.load(f)
+
+K = np.array(calib["K"], dtype=np.float64)
+dist = np.array(calib["dist"], dtype=np.float64)
+
+width = calib["image_size"]["width"]
+height = calib["image_size"]["height"]
+size = (width, height)
+
+print("Loaded calibration:")
+print("  Image size:", size)
+print("  K:\n", K)
+print("  dist:", dist)
+
+# -----------------------------
+# Prepare undistortion maps
+# -----------------------------
+# IMPORTANT for CT: keep geometry unchanged
+newK = K.copy()
+
+map1, map2 = cv2.initUndistortRectifyMap(
+    cameraMatrix=K,
+    distCoeffs=dist,
+    R=None,
+    newCameraMatrix=newK,
+    size=size,
+    m1type=cv2.CV_32FC1
+)
 
 
 def send(ser, cmd: str):
@@ -160,21 +193,18 @@ def take_photo(index: int, angle_deg: int, overlay=False, crop: dict[str, int] |
         if image is None:
             raise ValueError("Failed to decode image")
 
-        # Resize to 512x512
-        image_512 = cv2.resize(image, (512, 512), interpolation=cv2.INTER_AREA)
+        # Resize
+        image_resized = cv2.resize(image, (RESIZE_HEIGHT, RESIZE_WIDTH), interpolation=cv2.INTER_AREA)
 
         # Apply overlay if required
         if overlay:
-            image_512 = overlay_grid(image_512, color=(0, 255, 0), thickness=1)
+            image_resized = overlay_grid(image_resized, color=(0, 255, 0), thickness=1)
 
         # Apply cropping if required
         if crop is not None:
-            image_512 = crop_borders(image_512, top=crop['top'], bottom=crop['bottom'], left=crop['left'], right=crop['right'])
+            image_resized = crop_borders(image_resized, top=crop['top'], bottom=crop['bottom'], left=crop['left'], right=crop['right'])
 
-        # Save as PNG
-        cv2.imwrite(f'{IMAGE_DIR}/{filename}', image_512)
-
-        return image_512
+        return image_resized
 
     except (requests.RequestException, ValueError) as e:
         print(f"[Error] Image fetch failed: {e}")
@@ -210,7 +240,22 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
         # Settle time for vibration/rig flex
         time.sleep(0.5)
 
-        take_photo(index=i, angle_deg=angle, overlay=args.display_overlay, crop=crop)
+        img = take_photo(index=i, angle_deg=angle, overlay=args.display_overlay, crop=BORDER_CROPS)
+
+        h, w = img.shape[:2]
+        assert h == CALIBRATED_HEIGHT and w == CALIBRATED_WIDTH
+
+        # apply the calibration parameters
+        undistorted = cv2.remap(
+            img,
+            map1,
+            map2,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT
+        )
+
+        cv2.imwrite(IMAGE_DIR, undistorted)
+
 
     # Return to 0°
     send(ser, "MA 0")
