@@ -191,7 +191,7 @@ def take_photo(index: int, angle_deg: int, overlay=False, crop: dict[str, int] |
         response.raise_for_status()
 
         img_array = np.frombuffer(response.content, dtype=np.uint8)
-        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        image = cv2.imdecode(img_array, cv2.IMREAD_GRAYSCALE)
 
         if image is None:
             raise ValueError("Failed to decode image")
