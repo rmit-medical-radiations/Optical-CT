@@ -23,7 +23,7 @@ picam2.set_controls({
     "AeEnable": False,
     "AwbEnable": False,
 
-    "ExposureTime": 200000,
+    "ExposureTime": 500000,
     "AnalogueGain": 1.0,
 
     # Minimise ISP alterations
