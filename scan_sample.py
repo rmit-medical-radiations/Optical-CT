@@ -191,23 +191,21 @@ def take_photo(index: int, angle_deg: int, overlay=False, crop: dict[str, int] |
         response.raise_for_status()
 
         img_array = np.frombuffer(response.content, dtype=np.uint8)
-        image = cv2.imdecode(img_array, cv2.IMREAD_GRAYSCALE)
+        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         if image is None:
             raise ValueError("Failed to decode image")
 
-        # Resize
-        image_resized = cv2.resize(image, (RESIZE_HEIGHT, RESIZE_WIDTH), interpolation=cv2.INTER_AREA)
-
         # Apply overlay if required
         if overlay:
-            image_resized = overlay_grid(image_resized, color=(0, 255, 0), thickness=1)
+            image = overlay_grid(image, color=(0, 255, 0), thickness=1)
 
         # Apply cropping if required
         if crop is not None:
-            image_resized = crop_borders(image_resized, top=crop['top'], bottom=crop['bottom'], left=crop['left'], right=crop['right'])
+            image = crop_borders(image, top=crop['top'], bottom=crop['bottom'], left=crop['left'], right=crop['right'])
 
-        return image_resized
+        return image
 
     except (requests.RequestException, ValueError) as e:
         print(f"[Error] Image fetch failed: {e}")
