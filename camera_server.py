@@ -80,7 +80,15 @@ def capture():
     if image is None:
         return "Decode failed", 500
 
-    out = io.BytesIO(image.tobytes())
+    # Convert to grayscale (use luminance)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Encode back to PNG
+    success, png = cv2.imencode(".png", gray)
+    if not success:
+        return "Encode failed", 500
+
+    out = io.BytesIO(png.tobytes())
     resp = send_file(out, mimetype="image/png")
 
     # Strongly discourage caching
