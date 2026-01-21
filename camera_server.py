@@ -18,7 +18,7 @@ app = Flask(__name__)
 picam2 = Picamera2()
 config = picam2.create_still_configuration(
     raw={
-        "format": "SRGGB12",
+        "format": "SRGGB10",
         "size": (2028, 1520)
     },
     buffer_count=1
