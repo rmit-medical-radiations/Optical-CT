@@ -51,24 +51,22 @@ def take_photo(index: int, crop: dict[str, int] | None = None):
         if image is None:
             raise ValueError("Failed to decode image")
 
-        # Resize to 512x512
-        image_512 = cv2.resize(image, (512, 512), interpolation=cv2.INTER_AREA)
-
         # Apply cropping if required
         if crop is not None:
-            image_512 = crop_borders(image_512, top=crop['top'], bottom=crop['bottom'], left=crop['left'], right=crop['right'])
+            image = crop_borders(image, top=crop['top'], bottom=crop['bottom'], left=crop['left'], right=crop['right'])
 
         # Save as PNG
-        cv2.imwrite(f'{IMAGE_DIR}/{filename}', image_512)
+        cv2.imwrite(f'{IMAGE_DIR}/{filename}', image)
 
-        return image_512
+        return image
 
     except (requests.RequestException, ValueError) as e:
         print(f"[Error] Image fetch failed: {e}")
         return None
 
 
-crop = {'top':60, 'bottom':20, 'left':20, 'right':20}
+# crop = {'top':60, 'bottom':20, 'left':20, 'right':20}
+crop = None
 
 
 def get_key():
