@@ -57,7 +57,8 @@ MOTION_STATUS_VAR = "MV"
 # Address of the Pi camera server
 CAMERA_URL = "http://192.168.7.2:8000/capture"
 
-BORDER_CROPS = {'top':60, 'bottom':20, 'left':20, 'right':20}
+# BORDER_CROPS = {'top':60, 'bottom':20, 'left':20, 'right':20}
+BORDER_CROPS = {'top':0, 'bottom':0, 'left':0, 'right':0}
 RESIZE_HEIGHT = 512
 RESIZE_WIDTH = 512
 CALIBRATED_HEIGHT = RESIZE_HEIGHT - BORDER_CROPS['top'] - BORDER_CROPS['bottom']
