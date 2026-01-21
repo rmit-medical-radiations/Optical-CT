@@ -6,14 +6,6 @@ import numpy as np
 
 # This server runs on the RPi Zero.
 
-def block_average(img, out_h=512, out_w=512):
-    h, w = img.shape
-    bh = h // out_h
-    bw = w // out_w
-    img = img[:out_h*bh, :out_w*bw]
-    return img.reshape(out_h, bh, out_w, bw).mean(axis=(1, 3))
-
-
 app = Flask(__name__)
 
 picam2 = Picamera2()
