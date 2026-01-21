@@ -1,6 +1,9 @@
 from flask import Flask, send_file, Response
 import io
 from picamera2 import Picamera2
+from libcamera import controls
+
+# This server runs on the RPi Zero.
 
 RESOLUTION = (1024, 1024)
 app = Flask(__name__)
