@@ -23,8 +23,7 @@ picam2.set_controls({
     "AeEnable": False,
     "AwbEnable": False,
 
-    # Tune exposure using a flat-field image
-    "ExposureTime": 20000,     # example
+    "ExposureTime": 40000,
     "AnalogueGain": 1.0,
 
     # Keep frame timing stable
