@@ -2,6 +2,7 @@ from flask import Flask, send_file, Response
 import io
 from picamera2 import Picamera2
 import cv2
+import numpy as np
 
 # This server runs on the RPi Zero.
 
@@ -62,7 +63,7 @@ def index():
     <img id="frame" src="/capture" />
     <script>
       const img = document.getElementById('frame');
-      const intervalMs = 200; // adjust (e.g. 100–1000)
+      const intervalMs = 500; // adjust (e.g. 100–1000)
       function refresh() {
         // cache-buster to force a new fetch each time
         img.src = "/capture?t=" + Date.now();
@@ -73,43 +74,38 @@ def index():
 </html>
 """, mimetype="text/html")
 
+
 @app.route('/capture', methods=["GET"])
 def capture():
-    # Capture RAW frame
-    request = picam2.capture_request()
-    raw = request.make_array("raw")
-    request.release()
+    # Capture ISP-processed frame directly to memory
+    stream = io.BytesIO()
+    picam2.capture_file(stream, format="png")
+    stream.seek(0)
 
-    # SRGGB12 assumed:
-    # R G
-    # G B
-    G1 = raw[0::2, 1::2]
-    G2 = raw[1::2, 0::2]
-    green = 0.5 * (G1 + G2)
+    # Decode PNG to numpy array
+    img_array = np.frombuffer(stream.getvalue(), dtype=np.uint8)
+    image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    if image is None:
+        return "Decode failed", 500
 
-    # center crop to square
-    h, w = green.shape
-    side = min(h, w)
-    y0 = (h - side) // 2
-    x0 = (w - side) // 2
-    green_sq = green[y0:y0+side, x0:x0+side]
+    # Convert to grayscale (use luminance)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # then average to 512×512
-    green_512 = block_average(green_sq, 512, 512)
+    # Optional: normalise for display (NOT OD)
+    gray = gray.astype(np.float32)
+    gray -= gray.min()
+    gray /= (gray.max() + 1e-6)
+    gray_8 = (gray * 255).astype(np.uint8)
 
-    # Normalize for display (not OD!)
-    green_512 -= green_512.min()
-    green_512 /= green_512.max() + 1e-6
-    green_512_8 = (green_512 * 255).astype(np.uint8)
-
-    # Encode as PNG
-    success, png = cv2.imencode(".png", green_512_8)
+    # Encode back to PNG
+    success, png = cv2.imencode(".png", gray_8)
     if not success:
         return "Encode failed", 500
 
-    stream = io.BytesIO(png.tobytes())
-    resp = send_file(stream, mimetype="image/png")
+    out = io.BytesIO(png.tobytes())
+    resp = send_file(out, mimetype="image/png")
 
+    # Strongly discourage caching
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
