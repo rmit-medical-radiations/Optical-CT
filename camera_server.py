@@ -19,7 +19,7 @@ picam2 = Picamera2()
 config = picam2.create_still_configuration(
     raw={
         "format": "SRGGB10",
-        "size": (2028, 1520)
+        "size": (1332, 990)
     },
     buffer_count=1
 )
