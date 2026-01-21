@@ -17,26 +17,30 @@ app = Flask(__name__)
 
 picam2 = Picamera2()
 config = picam2.create_still_configuration(
-    raw={
-        "format": "SRGGB10",
-        "size": (1332, 990)
+    main={
+        "format": "RGB888",
+        "size": (512, 512),
     },
-    buffer_count=1
+    buffer_count=2,
 )
 picam2.configure(config)
 picam2.start()
 
-# disable all auto behaviour and lock exposure
 picam2.set_controls({
     "AeEnable": False,
     "AwbEnable": False,
 
-    # Choose these based on flat-field (no clipping)
-    "ExposureTime": 20000,     # microseconds (example)
+    # Tune exposure using a flat-field image
+    "ExposureTime": 20000,     # example
     "AnalogueGain": 1.0,
 
-    # Keep timing stable (important for LED arrays)
+    # Keep frame timing stable
     "FrameDurationLimits": (20000, 20000),
+
+    # Minimise ISP alterations
+    "Sharpness": 0.0,
+    "Saturation": 0.0,
+    "Contrast": 1.0,
 })
 
 
