@@ -21,7 +21,7 @@ config = picam2.create_still_configuration(
         "format": "SRGGB12",
         "size": (2028, 1520)
     },
-    buffer_count=2
+    buffer_count=1
 )
 picam2.configure(config)
 picam2.start()
