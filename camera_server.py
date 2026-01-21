@@ -23,7 +23,7 @@ picam2.set_controls({
     "AeEnable": False,
     "AwbEnable": False,
 
-    "ExposureTime": 40000,
+    "ExposureTime": 100000,
     "AnalogueGain": 1.0,
 
     # Keep frame timing stable
