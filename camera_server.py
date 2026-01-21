@@ -83,14 +83,8 @@ def capture():
     # Convert to grayscale (use luminance)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # Optional: normalise for display (NOT OD)
-    gray = gray.astype(np.float32)
-    gray -= gray.min()
-    gray /= (gray.max() + 1e-6)
-    gray_8 = (gray * 255).astype(np.uint8)
-
     # Encode back to PNG
-    success, png = cv2.imencode(".png", gray_8)
+    success, png = cv2.imencode(".png", gray)
     if not success:
         return "Encode failed", 500
 
