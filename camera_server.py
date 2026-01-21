@@ -69,29 +69,25 @@ def index():
 
 @app.route('/capture', methods=["GET"])
 def capture():
-    # Capture ISP-processed frame directly to memory
     stream = io.BytesIO()
     picam2.capture_file(stream, format="png")
     stream.seek(0)
 
-    # Decode PNG to numpy array
     img_array = np.frombuffer(stream.getvalue(), dtype=np.uint8)
     image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
     if image is None:
         return "Decode failed", 500
 
-    # Convert to grayscale (use luminance)
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Use green channel only (CT-friendly)
+    green = image[:, :, 1]
 
-    # Encode back to PNG
-    success, png = cv2.imencode(".png", gray)
+    success, png = cv2.imencode(".png", green)
     if not success:
         return "Encode failed", 500
 
     out = io.BytesIO(png.tobytes())
     resp = send_file(out, mimetype="image/png")
 
-    # Strongly discourage caching
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
