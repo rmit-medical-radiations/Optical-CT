@@ -21,7 +21,7 @@ picam2.start()
 picam2.set_controls({
     "AeEnable": False,
     "AwbEnable": False,
-    "NoiseReductionMode": NoiseReductionModeEnum.Off
+    "NoiseReductionMode": NoiseReductionModeEnum.Off,
 
     "ExposureTime": 500000,
     "AnalogueGain": 1.0,
