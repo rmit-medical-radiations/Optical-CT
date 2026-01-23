@@ -7,7 +7,7 @@ picam2 = Picamera2()
 # Define the desired raw format and size based on 'libcamera-hello --list-cameras' output
 # Example values for an IMX477 sensor:
 raw_format = 'SBGGR10_CSI2P'  # packed format
-raw_size = (2028, 1080) 
+raw_size = (1332, 990) 
 
 # Create the configuration, explicitly defining the raw stream
 # A 'main' stream is often also required for general use or preview
