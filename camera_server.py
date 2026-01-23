@@ -4,6 +4,7 @@ from picamera2 import Picamera2
 import cv2
 import numpy as np
 from pprint import pprint
+from libcamera.controls import NoiseReductionModeEnum
 
 # This server runs on the RPi Zero.
 
@@ -11,7 +12,7 @@ app = Flask(__name__)
 
 picam2 = Picamera2()
 config = picam2.create_still_configuration(
-    main={"format": "RGB888", "size": (512, 512), "preserve_ar": False},
+    main={"format": "Y8"},
     buffer_count=1,
 )
 picam2.configure(config)
@@ -20,6 +21,7 @@ picam2.start()
 picam2.set_controls({
     "AeEnable": False,
     "AwbEnable": False,
+    "NoiseReductionMode": NoiseReductionModeEnum.Off
 
     "ExposureTime": 500000,
     "AnalogueGain": 1.0,
@@ -66,24 +68,26 @@ def index():
 @app.route('/capture', methods=["GET"])
 def capture():
     stream = io.BytesIO()
+
+    # Capture grayscale image directly (Y8)
     picam2.capture_file(stream, format="png")
     stream.seek(0)
 
+    # Decode as single-channel grayscale
     img_array = np.frombuffer(stream.getvalue(), dtype=np.uint8)
-    image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    if image is None:
+    gray = cv2.imdecode(img_array, cv2.IMREAD_GRAYSCALE)
+    if gray is None:
         return "Decode failed", 500
 
-    # Use green channel only (CT-friendly)
-    green = image[:, :, 1]
-
-    success, png = cv2.imencode(".png", green)
+    # Re-encode (optional, but keeps pipeline explicit)
+    success, png = cv2.imencode(".png", gray)
     if not success:
         return "Encode failed", 500
 
     out = io.BytesIO(png.tobytes())
     resp = send_file(out, mimetype="image/png")
 
+    # Strongly discourage caching
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
