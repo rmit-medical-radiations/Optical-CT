@@ -70,11 +70,12 @@ def capture():
     # Capture YUV420 frame directly as a NumPy array
     frame = picam2.capture_array("main")
 
-    # frame shape is (H * 3/2, W) for YUV420
-    h, w = frame.shape[0] * 2 // 3, frame.shape[1]
+    # Get configured output size
+    cfg = picam2.camera_configuration()
+    W, H = cfg["main"]["size"]
 
     # Extract Y (luminance) plane
-    Y = frame[:h, :]
+    Y = frame[:H, :W]
 
     # Encode to PNG
     success, png = cv2.imencode(".png", Y)
