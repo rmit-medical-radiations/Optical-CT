@@ -4,7 +4,7 @@ from picamera2 import Picamera2
 import cv2
 import numpy as np
 from pprint import pprint
-from libcamera.controls import NoiseReductionModeEnum
+from libcamera import controls
 
 # This server runs on the RPi Zero.
 
@@ -21,7 +21,7 @@ picam2.start()
 picam2.set_controls({
     "AeEnable": False,
     "AwbEnable": False,
-    "NoiseReductionMode": NoiseReductionModeEnum.Off,
+    "NoiseReductionMode": controls.draft.NoiseReductionModeEnum.Off,
 
     "ExposureTime": 500000,
     "AnalogueGain": 1.0,
