@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 picam2 = Picamera2()
 config = picam2.create_still_configuration(
-    main={"format": "RGB888"},
+    main={"format": "YUV420"},
     buffer_count=1,
 )
 picam2.configure(config)
@@ -67,20 +67,17 @@ def index():
 
 @app.route('/capture', methods=["GET"])
 def capture():
-    stream = io.BytesIO()
+    # Capture YUV420 frame directly as a NumPy array
+    frame = picam2.capture_array("main")
 
-    # Capture grayscale image directly (Y8)
-    picam2.capture_file(stream, format="png")
-    stream.seek(0)
+    # frame shape is (H * 3/2, W) for YUV420
+    h, w = frame.shape[0] * 2 // 3, frame.shape[1]
 
-    # Decode as single-channel grayscale
-    img_array = np.frombuffer(stream.getvalue(), dtype=np.uint8)
-    gray = cv2.imdecode(img_array, cv2.IMREAD_GRAYSCALE)
-    if gray is None:
-        return "Decode failed", 500
+    # Extract Y (luminance) plane
+    Y = frame[:h, :]
 
-    # Re-encode (optional, but keeps pipeline explicit)
-    success, png = cv2.imencode(".png", gray)
+    # Encode to PNG
+    success, png = cv2.imencode(".png", Y)
     if not success:
         return "Encode failed", 500
 
@@ -91,6 +88,7 @@ def capture():
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
+
     return resp
 
 
