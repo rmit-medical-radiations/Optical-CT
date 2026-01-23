@@ -1,28 +1,32 @@
-import time
-import numpy as np
 from picamera2 import Picamera2
+import numpy as np
 
+# Instantiate the camera
 picam2 = Picamera2()
 
-# Select a sensor mode for full resolution capture
-# The HQ camera's full resolution is 4056x3040
-modes = picam2.sensor_modes
-# Select the appropriate mode (often index 0 or 1 for full resolution, check your output)
-# Printing modes can help: print(modes)
-selected_mode = modes[0] 
+# Define the desired raw format and size based on 'libcamera-hello --list-cameras' output
+# Example values for an IMX477 sensor:
+raw_format = 'SBGGR10_CSI2P'
+raw_size = (1332, 990) 
 
-camera_config = picam2.create_still_configuration(
-    raw={'format': selected_mode['unpacked']},
-    sensor={'output_size': selected_mode['size'], 'bit_depth': selected_mode['bit_depth']}
+# Create the configuration, explicitly defining the raw stream
+# A 'main' stream is often also required for general use or preview
+config = picam2.create_still_configuration(
+    raw={"format": raw_format, "size": raw_size}
 )
-picam2.configure(camera_config)
 
+# Configure the camera
+picam2.configure(config)
+
+# Start the camera
 picam2.start()
-time.sleep(2)
 
-# Capture the raw frame as a 16-bit numpy array
-# .view(np.uint16) is used to unpack the 12-bit packed sensor data into 16-bit elements
-raw_array = picam2.capture_array("raw").view(np.uint16)
+# Optional: Capture a raw frame and view it as a numpy array
+# Unpacked raw formats are stored as 16-bit values, using the bottom bits
+raw_array = picam2.capture_array("raw").view(np.uint16) 
 
+print(f"Captured raw array shape: {raw_array.shape}")
+print(f"Captured raw array data type: {raw_array.dtype}")
+
+# Stop the camera
 picam2.stop()
-print(f"Captured raw array with shape: {raw_array.shape}")
