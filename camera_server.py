@@ -3,6 +3,7 @@ import io
 from picamera2 import Picamera2
 import cv2
 import numpy as np
+from pprint import pprint
 
 # This server runs on the RPi Zero.
 
@@ -29,6 +30,8 @@ picam2.set_controls({
     "Saturation": 0.0,
     "Contrast": 1.0,
 })
+
+pprint(picam2.camera_configuration())
 
 
 @app.route("/")
