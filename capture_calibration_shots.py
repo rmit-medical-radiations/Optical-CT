@@ -65,10 +65,6 @@ def take_photo(index: int, crop: dict[str, int] | None = None):
         return None
 
 
-# crop = {'top':60, 'bottom':20, 'left':20, 'right':20}
-crop = None
-
-
 def get_key():
     if select.select([sys.stdin], [], [], 0)[0]:
         return sys.stdin.read(1)
@@ -89,7 +85,7 @@ try:
                 print("Exiting")
                 break
             elif key == ' ':
-                take_photo(index=i, crop=crop)
+                take_photo(index=i)
                 print(f'image {i}')
                 i += 1
 
