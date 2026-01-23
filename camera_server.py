@@ -13,7 +13,7 @@ picam2 = Picamera2()
 config = picam2.create_still_configuration(
     main={"format": "RGB888", "size": (512, 512)},
     sensor={"output_size": (4056, 3040)},
-    buffer_count=2,
+    buffer_count=1,
 )
 picam2.configure(config)
 picam2.start()
