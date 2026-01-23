@@ -12,7 +12,8 @@ app = Flask(__name__)
 
 picam2 = Picamera2()
 config = picam2.create_still_configuration(
-    main={"format": "YUV420", "size": (1024, 1024), "preserve_ar": False},
+    main={"format": "YUV420", "size": (1024, 1024), "preserve_ar": True},
+    raw={"size": picam2.sensor_resolution},
     buffer_count=1,
 )
 picam2.configure(config)
