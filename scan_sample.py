@@ -57,12 +57,13 @@ MOTION_STATUS_VAR = "MV"
 # Address of the Pi camera server
 CAMERA_URL = "http://192.168.7.2:8000/capture"
 
-# BORDER_CROPS = {'top':60, 'bottom':20, 'left':20, 'right':20}
-BORDER_CROPS = {'top':0, 'bottom':0, 'left':0, 'right':0}
-RESIZE_HEIGHT = 512
-RESIZE_WIDTH = 512
-CALIBRATED_HEIGHT = RESIZE_HEIGHT - BORDER_CROPS['top'] - BORDER_CROPS['bottom']
-CALIBRATED_WIDTH = RESIZE_WIDTH - BORDER_CROPS['left'] - BORDER_CROPS['right']
+# BORDER_CROPS = {'top':0, 'bottom':0, 'left':0, 'right':0}
+# RESIZE_HEIGHT = 512
+# RESIZE_WIDTH = 512
+
+# dimensions used for calibration
+CALIBRATED_HEIGHT = 1520
+CALIBRATED_WIDTH = 2028
 
 IMAGE_DIR = f"{expanduser('~')}/Downloads/oct_images"
 if os.path.exists(IMAGE_DIR):
@@ -247,7 +248,7 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
         # Settle time for vibration/rig flex
         time.sleep(0.5)
 
-        img = take_photo(index=i, angle_deg=angle, overlay=args.display_overlay, crop=BORDER_CROPS)
+        img = take_photo(index=i, angle_deg=angle, overlay=args.display_overlay)
 
         h, w = img.shape[:2]
         assert h == CALIBRATED_HEIGHT and w == CALIBRATED_WIDTH
