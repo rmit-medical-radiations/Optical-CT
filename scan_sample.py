@@ -57,13 +57,9 @@ MOTION_STATUS_VAR = "MV"
 # Address of the Pi camera server
 CAMERA_URL = "http://192.168.7.2:8000/capture"
 
-# BORDER_CROPS = {'top':0, 'bottom':0, 'left':0, 'right':0}
-# RESIZE_HEIGHT = 512
-# RESIZE_WIDTH = 512
-
 # dimensions used for calibration
-CALIBRATED_HEIGHT = 1520
 CALIBRATED_WIDTH = 2028
+CALIBRATED_HEIGHT = 1520
 
 IMAGE_DIR = f"{expanduser('~')}/Downloads/oct_images"
 if os.path.exists(IMAGE_DIR):
@@ -187,31 +183,24 @@ def crop_borders(
         left : w - right
     ]
 
-def take_photo(index: int, angle_deg: int, overlay=False, crop: dict[str, int] | None = None):
+
+def take_photo():
     try:
         response = requests.get(CAMERA_URL, timeout=5)
         response.raise_for_status()
 
         img_array = np.frombuffer(response.content, dtype=np.uint8)
-        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        image = cv2.imdecode(img_array, cv2.IMREAD_GRAYSCALE)
 
         if image is None:
             raise ValueError("Failed to decode image")
-
-        # Apply overlay if required
-        if overlay:
-            image = overlay_grid(image, color=(0, 255, 0), thickness=1)
-
-        # Apply cropping if required
-        if crop is not None:
-            image = crop_borders(image, top=crop['top'], bottom=crop['bottom'], left=crop['left'], right=crop['right'])
 
         return image
 
     except (requests.RequestException, ValueError) as e:
         print(f"[Error] Image fetch failed: {e}")
         return None
+
 
 
 with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
@@ -248,7 +237,7 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
         # Settle time for vibration/rig flex
         time.sleep(0.5)
 
-        img = take_photo(index=i, angle_deg=angle, overlay=args.display_overlay)
+        img = take_photo()
 
         h, w = img.shape[:2]
         assert h == CALIBRATED_HEIGHT and w == CALIBRATED_WIDTH
