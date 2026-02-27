@@ -55,7 +55,7 @@ NUM_POSITIONS = int(360 / DEGREE_INCREMENT)
 MOTION_STATUS_VAR = "MV"
 
 # Address of the Pi camera server
-CAMERA_URL = "http://192.168.7.2:8000/capture?stack=5"
+CAMERA_URL = "http://192.168.7.2:8000/capture?stack=3"
 
 # dimensions used for calibration
 CALIBRATED_WIDTH = 2028
