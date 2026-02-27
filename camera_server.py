@@ -1,91 +1,85 @@
-from flask import Flask, send_file, Response
+from flask import Flask, send_file, request
 import io
-from picamera2 import Picamera2
-import cv2
 import numpy as np
-from pprint import pprint
+import cv2
+from picamera2 import Picamera2
 from libcamera import controls
-
-# This server runs on the RPi Zero.
+import threading
 
 app = Flask(__name__)
+cam_lock = threading.Lock()
 
+# ---- Camera Setup ----
 picam2 = Picamera2()
+
 config = picam2.create_still_configuration(
     main={"format": "YUV420", "size": (2028, 1520), "preserve_ar": True},
-    buffer_count=1,
+    buffer_count=2,
 )
 picam2.configure(config)
-picam2.start()
 
 picam2.set_controls({
     "AeEnable": False,
     "AwbEnable": False,
     "NoiseReductionMode": controls.draft.NoiseReductionModeEnum.Off,
-
     "ExposureTime": 500000,
     "AnalogueGain": 1.0,
-
-    # Minimise ISP alterations
     "Sharpness": 0.0,
     "Saturation": 0.0,
     "Contrast": 1.0,
 })
 
-pprint(picam2.camera_configuration())
+picam2.start()
 
 
-@app.route("/")
-def index():
-    return Response("""
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8"/>
-    <title>Live Capture</title>
-    <style>
-      body { font-family: sans-serif; margin: 16px; }
-      img { max-width: 100%; height: auto; border: 1px solid #ccc; }
-    </style>
-  </head>
-  <body>
-    <h3>Live Capture</h3>
-    <img id="frame" src="/capture" />
-    <script>
-      const img = document.getElementById('frame');
-      const intervalMs = 1000; // adjust (e.g. 100–1000)
-      function refresh() {
-        // cache-buster to force a new fetch each time
-        img.src = "/capture?t=" + Date.now();
-      }
-      setInterval(refresh, intervalMs);
-    </script>
-  </body>
-</html>
-""", mimetype="text/html")
-
-
-@app.route('/capture', methods=["GET"])
+@app.route("/capture", methods=["GET"])
 def capture():
-    # Capture YUV420 frame directly as a NumPy array
-    frame = picam2.capture_array("main")
+    """
+    Query parameters:
+        stack: number of frames to average (default=1)
+        mode: mean or median (default=mean)
+    """
 
-    # Get configured output size
-    cfg = picam2.camera_configuration()
-    W, H = cfg["main"]["size"]
+    stack = int(request.args.get("stack", 1))
+    mode = request.args.get("mode", "mean")
 
-    # Extract Y (luminance) plane
-    Y = frame[:H, :W]
+    with cam_lock:
+        cfg = picam2.camera_configuration()
+        W, H = cfg["main"]["size"]
 
-    # Encode to PNG
-    success, png = cv2.imencode(".png", Y)
+        frames = []
+
+        for _ in range(max(1, stack)):
+            frame = picam2.capture_array("main")
+            Y = frame[:H, :W]
+            frames.append(Y.astype(np.float32))
+
+        if len(frames) == 1:
+            img = frames[0]
+        else:
+            stack_arr = np.stack(frames, axis=0)
+            if mode == "median":
+                img = np.median(stack_arr, axis=0)
+            else:
+                img = np.mean(stack_arr, axis=0)
+
+        img_u8 = np.clip(np.round(img), 0, 255).astype(np.uint8)
+
+    success, png = cv2.imencode(
+        ".png",
+        img_u8,
+        [cv2.IMWRITE_PNG_COMPRESSION, 1]
+    )
+
     if not success:
         return "Encode failed", 500
 
-    out = io.BytesIO(png.tobytes())
-    resp = send_file(out, mimetype="image/png")
+    resp = send_file(
+        io.BytesIO(png.tobytes()),
+        mimetype="image/png"
+    )
 
-    # Strongly discourage caching
+    # ---- Strongly discourage caching ----
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
@@ -93,6 +87,5 @@ def capture():
     return resp
 
 
-if __name__ == '__main__':
-    # threaded=True helps if multiple browser requests overlap
-    app.run(host='0.0.0.0', port=8000, threaded=True)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000, threaded=True)
