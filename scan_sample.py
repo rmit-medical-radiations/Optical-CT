@@ -235,7 +235,7 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
         wait_until_stopped(ser, dn_char=DEVICE_NAME)
 
         # Settle time for vibration/rig flex
-        time.sleep(0.5)
+        time.sleep(1.0)
 
         img = take_photo()
 
