@@ -32,7 +32,7 @@ picam2.set_controls({
 picam2.start()
 
 
-def capture_projection_timestamped(picam2, num_avg=8, stream="main"):
+def capture_projection_timestamped(num_avg=8, stream="main"):
     # Take a reference request to define "after settle"
     req0 = picam2.capture_request()
     t0 = req0.get_metadata()["SensorTimestamp"]
@@ -65,7 +65,7 @@ def capture():
     with cam_lock:
         cfg = picam2.camera_configuration()
         W, H = cfg["main"]["size"]
-        img = capture_projection(num_avg=stack)
+        img = capture_projection_timestamped(num_avg=stack)
         img_u8 = np.clip(np.round(img), 0, 255).astype(np.uint8)
 
     success, png = cv2.imencode(
