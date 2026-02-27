@@ -29,77 +29,48 @@ def kv_dict(s):
             "Expected key=value (e.g. top=2)"
         )
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--degree_increments', type=positive_int, default=10, help='Degree increments.', required=False)
-parser.add_argument('--images_averaged', type=positive_int, default=3, help='Number of averaged images per step.', required=False)
-parser.add_argument('--display_overlay', action='store_true', help='Show an overlay on the image for debugging.', required=False)
-args = parser.parse_args()
 
+def get_or_create_calibration_scan(
+    path: str,
+    capture_fn,
+    average_stack: int = 5,
+    force_new: bool = False,
+    label: str = "calibration",
+):
+    """
+    Generic handler for dark or flat frame capture.
 
-SERIAL_PORT = "/dev/ttyUSB0"
-BAUDRATE = 9600
-TIMEOUT = 1
+    Parameters
+    ----------
+    path : str
+        Path to saved .npy file.
+    capture_fn : callable
+        Function that captures and returns an averaged image (numpy array).
+        Must accept average_stack as argument.
+    average_stack : int
+        Number of frames to average during capture.
+    force_new : bool
+        If True, always capture a new scan.
+        If False, reuse existing if present.
+    label : str
+        "dark" or "flat" (for logging only)
 
-FULL_STEPS_PER_REV = 200
-MICROSTEPS = 256                                    # MS
-STEPS_PER_REV = FULL_STEPS_PER_REV * MICROSTEPS
-INITIAL_VELOCITY = 50                               # VI (steps per second)
-MAX_VELOCITY = 768000                               # VM
-ACCELERATION = 10000                                # A
-DECELERATION = 10000                                # D
-RUN_CURRENT = 100                                   # RC (percent)
-DEVICE_NAME = 'A'
+    Returns
+    -------
+    image : np.ndarray
+    """
 
-DEGREE_INCREMENT = args.degree_increments
-NUM_POSITIONS = int(360 / DEGREE_INCREMENT)
+    if os.path.exists(path) and not force_new:
+        print(f"Using existing {label} scan: {path}")
+        return np.load(path)
 
-MOTION_STATUS_VAR = "MV"
+    print(f"Capturing new {label} scan...")
+    image = capture_fn(average_stack)
 
-# Address of the Pi camera server
-CAMERA_URL = "http://192.168.7.2:8000"
+    np.save(path, image)
+    print(f"Saved new {label} scan to: {path}")
 
-# dimensions used for calibration
-CALIBRATED_WIDTH = 2028
-CALIBRATED_HEIGHT = 1520
-
-IMAGE_DIR = f"{expanduser('~')}/Downloads/oct_images"
-if os.path.exists(IMAGE_DIR):
-    shutil.rmtree(IMAGE_DIR)
-os.makedirs(IMAGE_DIR)
-
-# -----------------------------
-# Load calibration
-# -----------------------------
-CALIB_JSON = "camera_calibration_charuco.json"
-with open(CALIB_JSON, "r") as f:
-    calib = json.load(f)
-
-K = np.array(calib["K"], dtype=np.float64)
-dist = np.array(calib["dist"], dtype=np.float64)
-
-width = calib["image_size"]["width"]
-height = calib["image_size"]["height"]
-size = (width, height)
-
-print("Loaded calibration:")
-print("  Image size:", size)
-print("  K:\n", K)
-print("  dist:", dist)
-
-# -----------------------------
-# Prepare undistortion maps
-# -----------------------------
-# IMPORTANT for CT: keep geometry unchanged
-newK = K.copy()
-
-map1, map2 = cv2.initUndistortRectifyMap(
-    cameraMatrix=K,
-    distCoeffs=dist,
-    R=None,
-    newCameraMatrix=newK,
-    size=size,
-    m1type=cv2.CV_32FC1
-)
+    return image
 
 
 def send(ser, cmd: str):
@@ -126,7 +97,7 @@ def is_moving(ser) -> bool:
         print('is_moving parse failed')
         return True
 
-def wait_until_stopped(ser, dn_char=DEVICE_NAME, timeout_s=10.0):
+def wait_until_stopped(ser, dn_char='A', timeout_s=10.0):
     t0 = time.time()
     buffer = ""
 
@@ -204,11 +175,115 @@ def take_photo(images_averaged=3):
         return None
 
 
+##########################################################
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--degree_increments', type=positive_int, default=10, help='Degree increments.', required=False)
+parser.add_argument('--oct_stack', type=positive_int, default=3, help='Number of averaged images per step.', required=False)
+parser.add_argument('--display_overlay', action='store_true', help='Show an overlay on the image for debugging.', required=False)
+parser.add_argument("--new_dark", action="store_true", help="Force capture of new dark frame")
+parser.add_argument("--dark_stack", type=int, default=5, help="Number of frames to average for dark")
+parser.add_argument("--new_flat", action="store_true", help="Force capture of new flat frame")
+parser.add_argument("--flat_stack", type=int, default=5, help="Number of frames to average for flat")
+args = parser.parse_args()
+
+
+SERIAL_PORT = "/dev/ttyUSB0"
+BAUDRATE = 9600
+TIMEOUT = 1
+
+FULL_STEPS_PER_REV = 200
+MICROSTEPS = 256                                    # MS
+STEPS_PER_REV = FULL_STEPS_PER_REV * MICROSTEPS
+INITIAL_VELOCITY = 50                               # VI (steps per second)
+MAX_VELOCITY = 768000                               # VM
+ACCELERATION = 10000                                # A
+DECELERATION = 10000                                # D
+RUN_CURRENT = 100                                   # RC (percent)
+DEVICE_NAME = 'A'
+
+DEGREE_INCREMENT = args.degree_increments
+NUM_POSITIONS = int(360 / DEGREE_INCREMENT)
+
+MOTION_STATUS_VAR = "MV"
+
+# Address of the Pi camera server
+CAMERA_URL = "http://192.168.7.2:8000"
+
+# dimensions used for calibration
+CALIBRATED_WIDTH = 2028
+CALIBRATED_HEIGHT = 1520
+
+# directories
+BASE_DIR = f"{expanduser('~')}/OCT"
+
+IMAGE_DIR = f"{BASE_DIR}/images"
+if os.path.exists(IMAGE_DIR):
+    shutil.rmtree(IMAGE_DIR)
+os.makedirs(IMAGE_DIR)
+
+CONFIG_DIR = f"{BASE_DIR}/config"
+if not os.path.exists(CONFIG_DIR):
+    os.makedirs(CONFIG_DIR)
+
+# -----------------------------
+# Load calibration
+# -----------------------------
+CALIB_JSON = "camera_calibration_charuco.json"
+with open(CALIB_JSON, "r") as f:
+    calib = json.load(f)
+
+K = np.array(calib["K"], dtype=np.float64)
+dist = np.array(calib["dist"], dtype=np.float64)
+
+width = calib["image_size"]["width"]
+height = calib["image_size"]["height"]
+size = (width, height)
+
+print("Loaded calibration:")
+print("  Image size:", size)
+print("  K:\n", K)
+print("  dist:", dist)
+
+# -----------------------------
+# Prepare undistortion maps
+# -----------------------------
+# IMPORTANT for CT: keep geometry unchanged
+newK = K.copy()
+
+map1, map2 = cv2.initUndistortRectifyMap(
+    cameraMatrix=K,
+    distCoeffs=dist,
+    R=None,
+    newCameraMatrix=newK,
+    size=size,
+    m1type=cv2.CV_32FC1
+)
+
+
+# dark - LED off
+dark = get_or_create_calibration_scan(
+    path=f"{CONFIG_DIR}/dark.npy",
+    capture_fn=take_photo,
+    average_stack=5,
+    force_new=args.new_dark,
+    label="dark",
+)
+
+# flat - LED on, no sample
+flat = get_or_create_calibration_scan(
+    path=f"{CONFIG_DIR}/flat.npy",
+    capture_fn=take_photo,
+    average_stack=5,
+    force_new=args.new_flat,
+    label="flat",
+)
+
 
 with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
     time.sleep(0.5)
 
-    # Set up initial parameters
+    # Set up initial stepper parameters
     send(ser, f"EE=0")
     send(ser, f"DN={DEVICE_NAME}")
     send(ser, f"MS={MICROSTEPS}")
@@ -239,7 +314,7 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
         # Settle time for vibration/rig flex
         time.sleep(1.0)
 
-        img = take_photo(images_averaged=args.images_averaged)
+        img = take_photo(images_averaged=args.oct_stack)
 
         h, w = img.shape[:2]
         assert h == height and w == width
