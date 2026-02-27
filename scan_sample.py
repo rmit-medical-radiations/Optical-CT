@@ -8,6 +8,9 @@ import os
 import shutil
 import argparse
 import json
+import sys
+import termios
+import tty
 
 os.environ['BLINKA_FT232H'] = '1'
 import board
@@ -175,6 +178,33 @@ def take_photo(images_averaged=3):
         return None
 
 
+def wait_for_space_or_abort(msg=''):
+    """
+    SPACE → continue
+    q     → abort (raises KeyboardInterrupt)
+    """
+
+    print(f"{msg} - press SPACE to continue, or q to abort...")
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1)
+
+            if ch == " ":
+                print()
+                return True
+
+            if ch.lower() == "q":
+                print("\nAbort requested.")
+                raise KeyboardInterrupt
+
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
 
 ##########################################################
 
@@ -264,8 +294,9 @@ def run_scan():
             m1type=cv2.CV_32FC1
         )
 
-
+        
         # dark - LED off
+        wait_for_space_or_abort(msg='Capturing the dark calibration scan')
         dark = get_or_create_calibration_scan(
             path=f"{CONFIG_DIR}/dark.npy",
             capture_fn=take_photo,
@@ -275,6 +306,7 @@ def run_scan():
         )
 
         # flat - LED on, no sample
+        wait_for_space_or_abort(msg='Capturing the flat calibration scan')
         flat = get_or_create_calibration_scan(
             path=f"{CONFIG_DIR}/flat.npy",
             capture_fn=take_photo,
