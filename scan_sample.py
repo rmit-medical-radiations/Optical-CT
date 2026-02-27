@@ -186,7 +186,7 @@ def crop_borders(
 
 def take_photo():
     try:
-        response = requests.get(CAMERA_URL, timeout=5)
+        response = requests.get(CAMERA_URL, timeout=10)
         response.raise_for_status()
 
         img_array = np.frombuffer(response.content, dtype=np.uint8)
