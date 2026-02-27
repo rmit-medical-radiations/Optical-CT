@@ -205,6 +205,18 @@ def wait_for_space_or_abort(msg=''):
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
+def set_lamp_on():
+    p = digitalio.DigitalInOut(board.C0)
+    p.direction = digitalio.Direction.OUTPUT
+    p.value = True
+
+def set_lamp_off():
+    p = digitalio.DigitalInOut(board.C0)
+    p.direction = digitalio.Direction.OUTPUT
+    p.value = False
+
+
+
 
 ##########################################################
 
@@ -296,7 +308,8 @@ def run_scan():
 
         
         # dark - LED off
-        wait_for_space_or_abort(msg='Capturing the dark calibration scan')
+        wait_for_space_or_abort(msg='Capturing the dark calibration scan (LED off)')
+        set_lamp_off()
         dark = get_or_create_calibration_scan(
             path=f"{CONFIG_DIR}/dark.npy",
             capture_fn=take_photo,
@@ -306,7 +319,8 @@ def run_scan():
         )
 
         # flat - LED on, no sample
-        wait_for_space_or_abort(msg='Capturing the flat calibration scan')
+        wait_for_space_or_abort(msg='Capturing the flat calibration scan (LED on, no sample)')
+        set_lamp_on()
         flat = get_or_create_calibration_scan(
             path=f"{CONFIG_DIR}/flat.npy",
             capture_fn=take_photo,
@@ -331,9 +345,7 @@ def run_scan():
             send(ser, f"P=0")
 
             # turn lamp on
-            p = digitalio.DigitalInOut(board.C0)
-            p.direction = digitalio.Direction.OUTPUT
-            p.value = True
+            set_lamp_on()
 
             # --- Scan ---
             for i in range(NUM_POSITIONS):
@@ -369,7 +381,7 @@ def run_scan():
                 cv2.imwrite(f"{IMAGE_DIR}/{filename}", undistorted)
 
             # turn lamp off
-            p.value = False
+            set_lamp_off()
 
             # Return to 0°
             send(ser, "MA 0")
@@ -380,7 +392,7 @@ def run_scan():
 
     finally:
         # turn lamp off
-        p.value = False
+        set_lamp_off()
 
 
 if __name__ == "__main__":
