@@ -175,6 +175,7 @@ def take_photo(images_averaged=3):
         return None
 
 
+
 ##########################################################
 
 parser = argparse.ArgumentParser()
@@ -226,115 +227,129 @@ CONFIG_DIR = f"{BASE_DIR}/config"
 if not os.path.exists(CONFIG_DIR):
     os.makedirs(CONFIG_DIR)
 
-# -----------------------------
-# Load calibration
-# -----------------------------
-CALIB_JSON = "camera_calibration_charuco.json"
-with open(CALIB_JSON, "r") as f:
-    calib = json.load(f)
 
-K = np.array(calib["K"], dtype=np.float64)
-dist = np.array(calib["dist"], dtype=np.float64)
+def run_scan():
+    try:
+        # -----------------------------
+        # Load calibration
+        # -----------------------------
+        CALIB_JSON = "camera_calibration_charuco.json"
+        with open(CALIB_JSON, "r") as f:
+            calib = json.load(f)
 
-width = calib["image_size"]["width"]
-height = calib["image_size"]["height"]
-size = (width, height)
+        K = np.array(calib["K"], dtype=np.float64)
+        dist = np.array(calib["dist"], dtype=np.float64)
 
-print("Loaded calibration:")
-print("  Image size:", size)
-print("  K:\n", K)
-print("  dist:", dist)
+        width = calib["image_size"]["width"]
+        height = calib["image_size"]["height"]
+        size = (width, height)
 
-# -----------------------------
-# Prepare undistortion maps
-# -----------------------------
-# IMPORTANT for CT: keep geometry unchanged
-newK = K.copy()
+        print("Loaded calibration:")
+        print("  Image size:", size)
+        print("  K:\n", K)
+        print("  dist:", dist)
 
-map1, map2 = cv2.initUndistortRectifyMap(
-    cameraMatrix=K,
-    distCoeffs=dist,
-    R=None,
-    newCameraMatrix=newK,
-    size=size,
-    m1type=cv2.CV_32FC1
-)
+        # -----------------------------
+        # Prepare undistortion maps
+        # -----------------------------
+        # IMPORTANT for CT: keep geometry unchanged
+        newK = K.copy()
 
-
-# dark - LED off
-dark = get_or_create_calibration_scan(
-    path=f"{CONFIG_DIR}/dark.npy",
-    capture_fn=take_photo,
-    average_stack=5,
-    force_new=args.new_dark,
-    label="dark",
-)
-
-# flat - LED on, no sample
-flat = get_or_create_calibration_scan(
-    path=f"{CONFIG_DIR}/flat.npy",
-    capture_fn=take_photo,
-    average_stack=5,
-    force_new=args.new_flat,
-    label="flat",
-)
-
-
-with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
-    time.sleep(0.5)
-
-    # Set up initial stepper parameters
-    send(ser, f"EE=0")
-    send(ser, f"DN={DEVICE_NAME}")
-    send(ser, f"MS={MICROSTEPS}")
-    send(ser, f"VI={INITIAL_VELOCITY}")
-    send(ser, f"VM={MAX_VELOCITY}")
-    send(ser, f"A={ACCELERATION}")
-    send(ser, f"D={DECELERATION}")
-    send(ser, f"RC={RUN_CURRENT}")
-    send(ser, f"P=0")
-
-    # turn lamp on
-    p = digitalio.DigitalInOut(board.C0)
-    p.direction = digitalio.Direction.OUTPUT
-    p.value = True
-
-    # --- Scan ---
-    for i in range(NUM_POSITIONS):
-        angle = i * DEGREE_INCREMENT
-        target_steps = round((angle / 360.0) * STEPS_PER_REV)
-        print(f'position {i}, angle {angle}, target steps {target_steps}')
-
-        # Move Absolute (MA)
-        send(ser, f"MA {target_steps},1")
-
-        # Wait for motion to finish
-        wait_until_stopped(ser, dn_char=DEVICE_NAME)
-
-        # Settle time for vibration/rig flex
-        time.sleep(1.0)
-
-        img = take_photo(images_averaged=args.oct_stack)
-
-        h, w = img.shape[:2]
-        assert h == height and w == width
-
-        # apply the calibration parameters
-        undistorted = cv2.remap(
-            img,
-            map1,
-            map2,
-            interpolation=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT
+        map1, map2 = cv2.initUndistortRectifyMap(
+            cameraMatrix=K,
+            distCoeffs=dist,
+            R=None,
+            newCameraMatrix=newK,
+            size=size,
+            m1type=cv2.CV_32FC1
         )
 
-        # write the image
-        filename = f"img_{i:02d}_{angle:03d}deg.png"
-        cv2.imwrite(f"{IMAGE_DIR}/{filename}", undistorted)
 
-    # turn lamp off
-    p.value = False
+        # dark - LED off
+        dark = get_or_create_calibration_scan(
+            path=f"{CONFIG_DIR}/dark.npy",
+            capture_fn=take_photo,
+            average_stack=5,
+            force_new=args.new_dark,
+            label="dark",
+        )
 
-    # Return to 0°
-    send(ser, "MA 0")
-    wait_until_stopped(ser, dn_char=DEVICE_NAME)
+        # flat - LED on, no sample
+        flat = get_or_create_calibration_scan(
+            path=f"{CONFIG_DIR}/flat.npy",
+            capture_fn=take_photo,
+            average_stack=5,
+            force_new=args.new_flat,
+            label="flat",
+        )
+
+
+        with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
+            time.sleep(0.5)
+
+            # Set up initial stepper parameters
+            send(ser, f"EE=0")
+            send(ser, f"DN={DEVICE_NAME}")
+            send(ser, f"MS={MICROSTEPS}")
+            send(ser, f"VI={INITIAL_VELOCITY}")
+            send(ser, f"VM={MAX_VELOCITY}")
+            send(ser, f"A={ACCELERATION}")
+            send(ser, f"D={DECELERATION}")
+            send(ser, f"RC={RUN_CURRENT}")
+            send(ser, f"P=0")
+
+            # turn lamp on
+            p = digitalio.DigitalInOut(board.C0)
+            p.direction = digitalio.Direction.OUTPUT
+            p.value = True
+
+            # --- Scan ---
+            for i in range(NUM_POSITIONS):
+                angle = i * DEGREE_INCREMENT
+                target_steps = round((angle / 360.0) * STEPS_PER_REV)
+                print(f'position {i}, angle {angle}, target steps {target_steps}')
+
+                # Move Absolute (MA)
+                send(ser, f"MA {target_steps},1")
+
+                # Wait for motion to finish
+                wait_until_stopped(ser, dn_char=DEVICE_NAME)
+
+                # Settle time for vibration/rig flex
+                time.sleep(1.0)
+
+                img = take_photo(images_averaged=args.oct_stack)
+
+                h, w = img.shape[:2]
+                assert h == height and w == width
+
+                # apply the calibration parameters
+                undistorted = cv2.remap(
+                    img,
+                    map1,
+                    map2,
+                    interpolation=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_CONSTANT
+                )
+
+                # write the image
+                filename = f"img_{i:02d}_{angle:03d}deg.png"
+                cv2.imwrite(f"{IMAGE_DIR}/{filename}", undistorted)
+
+            # turn lamp off
+            p.value = False
+
+            # Return to 0°
+            send(ser, "MA 0")
+            wait_until_stopped(ser, dn_char=DEVICE_NAME)
+
+    except KeyboardInterrupt:
+        print("\nKeyboard interrupt detected. Stopping scan safely...")
+
+    finally:
+        # turn lamp off
+        p.value = False
+
+
+if __name__ == "__main__":
+    run_scan()
