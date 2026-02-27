@@ -242,7 +242,6 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
         img = take_photo(images_averaged=args.images_averaged)
 
         h, w = img.shape[:2]
-        print(f"h={h}, w={w}")
         assert h == height and w == width
 
         # apply the calibration parameters
