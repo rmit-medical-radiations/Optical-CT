@@ -98,6 +98,7 @@ def capture():
     mode = request.args.get("mode", "mean")
 
     with cam_lock:
+        print(f"stack={stack}")
         img = capture_projection_timestamped(picam2, num_avg=stack)
         img_u8 = np.clip(np.round(img), 0, 255).astype(np.uint8)
 
