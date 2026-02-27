@@ -187,7 +187,9 @@ def crop_borders(
 
 def take_photo(images_averaged=3):
     try:
-        response = requests.get(f"{CAMERA_URL}/capture?stack={images_averaged}", timeout=10)
+        camera_url = f"{CAMERA_URL}/capture?stack={images_averaged}"
+        print(f"requesting {camera_url}")
+        response = requests.get(camera_url, timeout=10)
         response.raise_for_status()
 
         img_array = np.frombuffer(response.content, dtype=np.uint8)
