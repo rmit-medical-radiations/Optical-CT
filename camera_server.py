@@ -32,23 +32,58 @@ picam2.set_controls({
 picam2.start()
 
 
-def capture_projection_timestamped(picam2, num_avg=8, stream="main"):
-    # Take a reference request to define "after settle"
+def capture_projection_timestamped(num_avg=8, stream="main", max_tries=400):
+    """
+    Timestamp-gated stack capture for YUV420 main stream.
+    Averages the Y (luma) plane only.
+
+    Args:
+        num_avg: number of fresh frames to include in the stack
+        stream: typically "main"
+        max_tries: safety cap to avoid infinite loop if frames don't advance
+
+    Returns:
+        (H, W) float32 averaged luma image
+    """
+    # Get configured main size (width, height)
+    cfg = picam2.camera_configuration()
+    W, H = cfg[stream]["size"]
+
+    # Reference frame timestamp (defines "after settle")
     req0 = picam2.capture_request()
-    t0 = req0.get_metadata()["SensorTimestamp"]
+    t0 = req0.get_metadata().get("SensorTimestamp", 0)
     req0.release()
 
     frames = []
-    while len(frames) < num_avg:
+    tries = 0
+    while len(frames) < num_avg and tries < max_tries:
+        tries += 1
+
         req = picam2.capture_request()
         meta = req.get_metadata()
-        img = req.make_array(stream)
+        arr = req.make_array(stream)  # YUV420 packed: typically (H*3/2, W)
         req.release()
 
-        if meta["SensorTimestamp"] > t0:
-            frames.append(img)
+        ts = meta.get("SensorTimestamp", 0)
+        if ts <= t0:
+            continue
 
-    return np.mean(np.stack(frames).astype(np.float32), axis=0)
+        # Extract Y plane safely: top H rows, full width
+        # Works for YUV420 where make_array returns a 2D array.
+        if arr.ndim == 2 and arr.shape[0] >= H and arr.shape[1] >= W:
+            y = arr[:H, :W]
+        else:
+            raise RuntimeError(f"Unexpected array shape for {stream}: {arr.shape}")
+
+        frames.append(y.astype(np.float32))
+
+    if len(frames) < num_avg:
+        raise RuntimeError(
+            f"Timed out collecting {num_avg} fresh frames (got {len(frames)}). "
+            f"Increase max_tries or check camera pipeline."
+        )
+
+    return np.mean(np.stack(frames, axis=0), axis=0)
 
 
 @app.route("/capture", methods=["GET"])
