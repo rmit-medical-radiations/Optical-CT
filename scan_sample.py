@@ -31,6 +31,7 @@ def kv_dict(s):
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--degree_increments', type=positive_int, default=10, help='Degree increments.', required=False)
+parser.add_argument('--images_averaged', type=positive_int, default=3, help='Number of averaged images per step.', required=False)
 parser.add_argument('--display_overlay', action='store_true', help='Show an overlay on the image for debugging.', required=False)
 args = parser.parse_args()
 
@@ -55,7 +56,7 @@ NUM_POSITIONS = int(360 / DEGREE_INCREMENT)
 MOTION_STATUS_VAR = "MV"
 
 # Address of the Pi camera server
-CAMERA_URL = "http://192.168.7.2:8000/capture?stack=3"
+CAMERA_URL = "http://192.168.7.2:8000"
 
 # dimensions used for calibration
 CALIBRATED_WIDTH = 2028
@@ -184,9 +185,9 @@ def crop_borders(
     ]
 
 
-def take_photo():
+def take_photo(images_averaged=3):
     try:
-        response = requests.get(CAMERA_URL, timeout=10)
+        response = requests.get(f"{CAMERA_URL}/capture?stack={images_averaged}", timeout=10)
         response.raise_for_status()
 
         img_array = np.frombuffer(response.content, dtype=np.uint8)
@@ -237,7 +238,7 @@ with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
         # Settle time for vibration/rig flex
         time.sleep(1.0)
 
-        img = take_photo()
+        img = take_photo(images_averaged=args.images_averaged)
 
         h, w = img.shape[:2]
         assert h == CALIBRATED_HEIGHT and w == CALIBRATED_WIDTH
