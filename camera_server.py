@@ -94,7 +94,6 @@ def capture():
     """
 
     stack = int(request.args.get("stack", 1))
-    print(f"stack={stack}")
 
     with cam_lock:
         img = capture_projection_timestamped(picam2, num_avg=stack)
