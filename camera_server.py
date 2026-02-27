@@ -32,7 +32,7 @@ picam2.set_controls({
 picam2.start()
 
 
-def capture_projection_timestamped(num_avg=8, stream="main", max_tries=400):
+def capture_projection_timestamped(picam2, num_avg=8, stream="main", max_tries=400):
     """
     Timestamp-gated stack capture for YUV420 main stream.
     Averages the Y (luma) plane only.
@@ -91,14 +91,12 @@ def capture():
     """
     Query parameters:
         stack: number of frames to average (default=1)
-        mode: mean or median (default=mean)
     """
 
     stack = int(request.args.get("stack", 1))
-    mode = request.args.get("mode", "mean")
+    print(f"stack={stack}")
 
     with cam_lock:
-        print(f"stack={stack}")
         img = capture_projection_timestamped(picam2, num_avg=stack)
         img_u8 = np.clip(np.round(img), 0, 255).astype(np.uint8)
 
