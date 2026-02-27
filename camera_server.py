@@ -32,14 +32,19 @@ picam2.set_controls({
 picam2.start()
 
 
-def capture_projection(num_avg=3):
-    # Mark time after settle has completed
-    _, meta = picam2.capture_array("main", return_metadata=True)
-    t0 = meta["SensorTimestamp"]
+def capture_projection_timestamped(picam2, num_avg=8, stream="main"):
+    # Take a reference request to define "after settle"
+    req0 = picam2.capture_request()
+    t0 = req0.get_metadata()["SensorTimestamp"]
+    req0.release()
 
     frames = []
     while len(frames) < num_avg:
-        img, meta = picam2.capture_array("main", return_metadata=True)
+        req = picam2.capture_request()
+        meta = req.get_metadata()
+        img = req.make_array(stream)
+        req.release()
+
         if meta["SensorTimestamp"] > t0:
             frames.append(img)
 
