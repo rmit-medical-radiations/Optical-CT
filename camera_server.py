@@ -32,6 +32,20 @@ picam2.set_controls({
 picam2.start()
 
 
+def capture_projection(num_avg=3):
+    # Mark time after settle has completed
+    _, meta = picam2.capture_array("main", return_metadata=True)
+    t0 = meta["SensorTimestamp"]
+
+    frames = []
+    while len(frames) < num_avg:
+        img, meta = picam2.capture_array("main", return_metadata=True)
+        if meta["SensorTimestamp"] > t0:
+            frames.append(img)
+
+    return np.mean(np.stack(frames).astype(np.float32), axis=0)
+
+
 @app.route("/capture", methods=["GET"])
 def capture():
     """
@@ -46,23 +60,7 @@ def capture():
     with cam_lock:
         cfg = picam2.camera_configuration()
         W, H = cfg["main"]["size"]
-
-        frames = []
-
-        for _ in range(max(1, stack)):
-            frame = picam2.capture_array("main")
-            Y = frame[:H, :W]
-            frames.append(Y.astype(np.float32))
-
-        if len(frames) == 1:
-            img = frames[0]
-        else:
-            stack_arr = np.stack(frames, axis=0)
-            if mode == "median":
-                img = np.median(stack_arr, axis=0)
-            else:
-                img = np.mean(stack_arr, axis=0)
-
+        img = capture_projection(num_avg=stack)
         img_u8 = np.clip(np.round(img), 0, 255).astype(np.uint8)
 
     success, png = cv2.imencode(
