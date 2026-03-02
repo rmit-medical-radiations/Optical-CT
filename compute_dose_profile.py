@@ -77,10 +77,6 @@ def crop_sample_region(imgs, dark, flat):
 
     return imgs_c, dark_c, flat_c
 
-def central_line_profile(vol):
-    Y, Z, X = vol.shape
-    return vol[Y//2, Z//2, :]  # along X
-
 def depth_dose_curve_from_volume(
     mu_vol: np.ndarray,
     mm_per_pixel: float,
