@@ -329,6 +329,7 @@ def run_scan():
             label="flat",
         )
 
+        wait_for_space_or_abort(msg='Scanning the sample (LED on, with sample)')
 
         with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT) as ser:
             time.sleep(0.5)
