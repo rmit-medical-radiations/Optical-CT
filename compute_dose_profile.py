@@ -129,19 +129,6 @@ def depth_dose_from_central_axis(
     mm_per_slice_y: float,
     roi_radius_px: int = 10,
 ):
-    """
-    Depth-dose along the cylinder axis (Y), using the CENTRAL value extracted
-    from each depth's lateral cross-section by averaging a small central ROI.
-
-    mu_vol: (Y, Z, X)
-    mm_per_slice_y: mm per voxel along Y
-    roi_radius_px: radius of central ROI in the (Z,X) plane
-
-    Returns:
-        depth_mm: (Y,) depth along Y, centred at 0
-        rel_dose: (Y,) normalized (max=1)
-        od_depth: (Y,) raw OD values
-    """
     Y, Z, X = mu_vol.shape
     zc, xc = Z // 2, X // 2
     r = int(roi_radius_px)
@@ -149,11 +136,11 @@ def depth_dose_from_central_axis(
     zL, zR = max(0, zc - r), min(Z, zc + r + 1)
     xL, xR = max(0, xc - r), min(X, xc + r + 1)
 
-    # central-axis value per depth (mean over central ROI)
-    od_depth = mu_vol[:, zL:zR, xL:xR].mean(axis=(1, 2))  # (Y,)
+    od_depth = mu_vol[:, zL:zR, xL:xR].mean(axis=(1, 2))
 
-    depth_mm = (np.arange(Y) - (Y // 2)) * mm_per_slice_y
+    depth_mm = np.arange(Y) * mm_per_slice_y
     rel_dose = od_depth / (float(np.max(od_depth)) + 1e-12)
+
     return depth_mm, rel_dose, od_depth
 
 def save_dose_profile_plot(pos_mm, rel_dose, output_path, title="Dose profile"):
