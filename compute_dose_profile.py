@@ -12,6 +12,7 @@ from pipeline_timer import PipelineTimer
 SAMPLE_TOP_PX = 280                     # pixels from the image top edge
 SAMPLE_CENTRE_OF_ROTATION_PX = 995      # pixels from the image left edge
 WINDOW_EXTENT_PX = 700                  # reconstruction window pixels in height and width
+SAMPLE_HEIGHT_PX = 570
 
 def load_png_stack(proj_dir, pattern="*.png"):
     files = sorted(glob.glob(os.path.join(proj_dir, pattern)))
@@ -128,40 +129,36 @@ def dose_profile_from_volume(
 def depth_dose_from_central_axis(
     mu_vol: np.ndarray,
     mm_per_slice_y: float,
+    sample_height_px: int,
     roi_radius_px: int = 10,
-    threshold_fraction: float = 0.05,
 ):
     """
-    Computes central-axis depth-dose only within the sample extent.
+    Compute depth-dose along the cylinder axis (Y) only within the sample height.
 
     mu_vol: (Y, Z, X)
-    mm_per_slice_y: physical spacing along Y
+    mm_per_slice_y: mm per voxel along Y
+    sample_height_px: height of the sample in pixels (e.g. 570)
     roi_radius_px: ROI radius around the central axis
-    threshold_fraction: fraction of max OD used to detect sample extent
     """
 
     Y, Z, X = mu_vol.shape
     zc, xc = Z // 2, X // 2
     r = int(roi_radius_px)
 
+    # central ROI bounds
     zL, zR = max(0, zc - r), min(Z, zc + r + 1)
     xL, xR = max(0, xc - r), min(X, xc + r + 1)
 
+    # determine sample region centred in reconstruction
+    y_center = Y // 2
+    half = sample_height_px // 2
+    y0 = max(0, y_center - half)
+    y1 = min(Y, y_center + half)
+
     # central-axis OD vs depth
-    od_depth = mu_vol[:, zL:zR, xL:xR].mean(axis=(1, 2))
+    od_depth = mu_vol[y0:y1, zL:zR, xL:xR].mean(axis=(1, 2))
 
-    # detect sample extent
-    thresh = threshold_fraction * od_depth.max()
-    valid = np.where(od_depth > thresh)[0]
-
-    y0 = valid[0]
-    y1 = valid[-1] + 1
-
-    od_depth = od_depth[y0:y1]
-
-    # depth from sample surface
     depth_mm = np.arange(len(od_depth)) * mm_per_slice_y
-
     rel_dose = od_depth / (float(np.max(od_depth)) + 1e-12)
 
     return depth_mm, rel_dose, od_depth
@@ -189,6 +186,35 @@ def save_depth_dose_plot(depth_mm, rel_dose, output_path="depth_dose.png",
     plt.savefig(output_path, dpi=300)
     plt.close()
     print(f"saved the depth dose plot in {output_path}")
+
+def get_or_create_attenuation_volume(
+    path: str,
+    projections: np.ndarray,
+    angles_deg: np.ndarray,
+):
+    """
+    Load an existing attenuation volume if present, otherwise reconstruct it.
+
+    path: path to attenuation_volume.npy
+    projections: P array (A,H,W)
+    angles_deg: projection angles
+
+    Returns
+    -------
+    mu_vol : np.ndarray
+    """
+
+    if os.path.exists(path):
+        print(f"Loading existing attenuation volume: {path}")
+        return np.load(path)
+
+    print("Reconstructing attenuation volume...")
+    mu_vol = recon_volume_fbp(projections, angles_deg)
+
+    np.save(path, mu_vol)
+    print(f"Saved attenuation volume to: {path}")
+
+    return mu_vol
 
 ####################################################
 
@@ -219,8 +245,12 @@ with t.step("Calculate line integrals"):
 
 # Reconstruct attenuation volume (slice-by-slice FBP)
 with t.step("Reconstruct attenuation volume"):
-    mu_vol = recon_volume_fbp(P, angles_deg)
-    np.save(os.path.join(RECONSTRUCT_DIR, "attenuation_volume.npy"), mu_vol)
+    attenuation_path = os.path.join(RECONSTRUCT_DIR, "attenuation_volume.npy")
+    mu_vol = get_or_create_attenuation_volume(
+        attenuation_path,
+        P,
+        angles_deg,
+    )
 
 # Compute the dose profiles at each slice
 mm_per_pixel_xz = 43 / 454
@@ -249,6 +279,7 @@ with t.step("Compute depth dose"):
     depth_mm, rel_dose, _ = depth_dose_from_central_axis(
         mu_vol,
         mm_per_slice_y=mm_per_slice_y,
+        sample_height_px=SAMPLE_HEIGHT_PX,
         roi_radius_px=10,
     )
     save_depth_dose_plot(depth_mm, rel_dose, os.path.join(RECONSTRUCT_DIR, "depth_dose.png"))
