@@ -9,20 +9,22 @@ from typing import Dict, List, Tuple
 @dataclass
 class PipelineTimer:
     """
-    Prints each step duration immediately and stores timings for a final report.
+    Prints the step name immediately when the step starts and the elapsed
+    time when the step completes. Timings are stored for a final report.
     """
     timings: List[Tuple[str, float]] = field(default_factory=list)
     _t0: float = field(default_factory=time.perf_counter)
 
     @contextmanager
     def step(self, name: str):
+        print(f"{name}...", end="", flush=True)
         start = time.perf_counter()
         try:
             yield
         finally:
             elapsed = time.perf_counter() - start
             self.timings.append((name, elapsed))
-            print(f"{name:<30} {elapsed:>8.3f} s")
+            print(f" {elapsed:.3f} s")
 
     def report(self, *, sort: bool = False, show_total: bool = True) -> None:
         rows = list(self.timings)
