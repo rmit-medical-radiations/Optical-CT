@@ -6,6 +6,7 @@ from skimage.transform import iradon
 import shutil
 import numpy as np
 import matplotlib.pyplot as plt
+import PipelineTimer
 
 
 SAMPLE_TOP = 280                    # pixels from the image top edge
@@ -179,46 +180,55 @@ if os.path.exists(RECONSTRUCT_DIR):
     shutil.rmtree(RECONSTRUCT_DIR)
 os.makedirs(RECONSTRUCT_DIR)
 
+t = PipelineTimer()
+
 # Load PNG projections, apply dark/flat, compute line integrals
-imgs, files = load_png_stack(IMAGE_DIR, pattern="*.png")  # (A,H,W)
-dark = np.load(os.path.join(CONFIG_DIR, "dark.npy")).astype(np.float32)
-flat = np.load(os.path.join(CONFIG_DIR, "flat.npy")).astype(np.float32)
+with t.step("Load PNG stack"):
+    imgs, files = load_png_stack(IMAGE_DIR, pattern="*.png")  # (A,H,W)
+    dark = np.load(os.path.join(CONFIG_DIR, "dark.npy")).astype(np.float32)
+    flat = np.load(os.path.join(CONFIG_DIR, "flat.npy")).astype(np.float32)
 
-# Crop images to focus on the sample
-imgs, dark, flat = crop_sample_region(imgs, dark, flat)
+    # Crop images to focus on the sample
+    imgs, dark, flat = crop_sample_region(imgs, dark, flat)
 
-P = line_integrals_from_png(imgs, dark, flat)  # (A,H,W)
-angles_deg = np.arange(P.shape[0], dtype=np.float32) * 2.0
+with t.step("Calculate line integrals"):
+    P = line_integrals_from_png(imgs, dark, flat)  # (A,H,W)
+    angles_deg = np.arange(P.shape[0], dtype=np.float32) * 2.0
 
 # Reconstruct attenuation volume (slice-by-slice FBP)
-mu_vol = recon_volume_fbp(P, angles_deg)
-np.save(os.path.join(RECONSTRUCT_DIR, "attenuation_volume.npy"), mu_vol)
+with t.step("Reconstruct attenuation volume"):
+    mu_vol = recon_volume_fbp(P, angles_deg)
+    np.save(os.path.join(RECONSTRUCT_DIR, "attenuation_volume.npy"), mu_vol)
 
 # Compute the dose profiles at each slice
 mm_per_pixel_xz = 43 / 454
 Y = mu_vol.shape[0]
 
-for y in range(Y):
-    pos_mm, rel_dose, _ = dose_profile_from_volume(
-        mu_vol,
-        mm_per_pixel_xz=mm_per_pixel_xz,
-        depth_y=y,
-        roi_radius_px=10,
-        lateral_axis="z",
-    )
+with t.step("Compute dose profiles"):
+    for y in range(Y):
+        pos_mm, rel_dose, _ = dose_profile_from_volume(
+            mu_vol,
+            mm_per_pixel_xz=mm_per_pixel_xz,
+            depth_y=y,
+            roi_radius_px=10,
+            lateral_axis="z",
+        )
 
-    save_dose_profile_plot(
-        pos_mm,
-        rel_dose,
-        os.path.join(RECONSTRUCT_DIR, f"profile_depth_{y:04d}.png"),
-        title=f"Dose profile (depth index {y})"
-    )
+        save_dose_profile_plot(
+            pos_mm,
+            rel_dose,
+            os.path.join(RECONSTRUCT_DIR, f"profile_depth_{y:04d}.png"),
+            title=f"Dose profile (depth index {y})"
+        )
 
 # Depth-dose along Y (dose beam direction)
-mm_per_slice_y = 0.01  # from calibration image
-depth_mm, rel_dose, _ = depth_dose_from_central_axis(
-    mu_vol,
-    mm_per_slice_y=mm_per_slice_y,
-    roi_radius_px=10,
-)
-save_depth_dose_plot(depth_mm, rel_dose, os.path.join(RECONSTRUCT_DIR, "depth_dose.png"))
+with t.step("Compute depth dose"):
+    mm_per_slice_y = 0.01  # from calibration image
+    depth_mm, rel_dose, _ = depth_dose_from_central_axis(
+        mu_vol,
+        mm_per_slice_y=mm_per_slice_y,
+        roi_radius_px=10,
+    )
+    save_depth_dose_plot(depth_mm, rel_dose, os.path.join(RECONSTRUCT_DIR, "depth_dose.png"))
+
+t.report()
