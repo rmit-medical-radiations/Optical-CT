@@ -32,7 +32,6 @@ def kv_dict(s):
             "Expected key=value (e.g. top=2)"
         )
 
-
 def get_or_create_calibration_scan(
     path: str,
     capture_fn,
@@ -43,25 +42,16 @@ def get_or_create_calibration_scan(
     """
     Generic handler for dark or flat frame capture.
 
-    Parameters
-    ----------
-    path : str
-        Path to saved .npy file.
-    capture_fn : callable
-        Function that captures and returns an averaged image (numpy array).
-        Must accept average_stack as argument.
-    average_stack : int
-        Number of frames to average during capture.
-    force_new : bool
-        If True, always capture a new scan.
-        If False, reuse existing if present.
-    label : str
-        "dark" or "flat" (for logging only)
+    Saves:
+        - raw data as .npy
+        - a viewable image as .png
 
     Returns
     -------
     image : np.ndarray
     """
+
+    png_path = os.path.splitext(path)[0] + ".png"
 
     if os.path.exists(path) and not force_new:
         print(f"Using existing {label} scan: {path}")
@@ -70,11 +60,28 @@ def get_or_create_calibration_scan(
     print(f"Capturing new {label} scan...")
     image = capture_fn(average_stack)
 
+    # Save numpy
     np.save(path, image)
-    print(f"Saved new {label} scan to: {path}")
+
+    # Save PNG for visual inspection
+    png_img = image
+
+    # Ensure dtype compatible with PNG
+    if png_img.dtype not in (np.uint8, np.uint16):
+        img = png_img.astype(np.float32)
+        lo, hi = np.percentile(img, (0.5, 99.5))
+        if hi > lo:
+            img = (img - lo) / (hi - lo)
+        img = np.clip(img, 0, 1)
+        png_img = (img * 65535).astype(np.uint16)
+
+    cv2.imwrite(png_path, png_img)
+
+    print(f"Saved new {label} scan to:")
+    print(f"  NPY: {path}")
+    print(f"  PNG: {png_path}")
 
     return image
-
 
 def send(ser, cmd: str):
     ser.write((cmd + "\r").encode("ascii"))
