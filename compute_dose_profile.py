@@ -26,7 +26,8 @@ def load_png_stack(proj_dir, pattern="*.png"):
         imgs.append(im.astype(np.float32))
     return np.stack(imgs, axis=0), files  # (A,H,W)
 
-def line_integrals_from_png(imgs, dark, flat, eps=1.0):
+# standard dark/flat correction + Beer–Lambert transform used for CT projection preprocessing
+def line_integrals_from_png(imgs, dark, flat, eps=1e-6):
     # Beer–Lambert: P = -log((I-D)/(F-D))
     num = np.clip(imgs - dark, eps, None)
     den = np.clip(flat - dark, eps, None)
