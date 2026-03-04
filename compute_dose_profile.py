@@ -224,9 +224,8 @@ IMAGE_DIR = f"{BASE_DIR}/images"
 CONFIG_DIR = f"{BASE_DIR}/config"
 RECONSTRUCT_DIR = f"{BASE_DIR}/reconstruct"
 
-if os.path.exists(RECONSTRUCT_DIR):
-    shutil.rmtree(RECONSTRUCT_DIR)
-os.makedirs(RECONSTRUCT_DIR)
+if not os.path.exists(RECONSTRUCT_DIR):
+    os.makedirs(RECONSTRUCT_DIR)
 
 t = PipelineTimer()
 
