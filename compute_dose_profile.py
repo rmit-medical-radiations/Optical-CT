@@ -113,6 +113,30 @@ def depth_dose_curve_from_volume(
     rel_dose = od_profile / (float(np.max(od_profile)) + 1e-12)
     return depth_mm, rel_dose, od_profile
 
+def axial_depth_dose_curve(
+    mu_vol: np.ndarray,
+    mm_per_slice: float,
+    roi_radius_px: int = 10,
+):
+    """
+    mu_vol: (Y, Z, X)
+    Depth is along Y (cylinder axis / radiation beam direction).
+    Returns depth_mm (Y,), rel_dose (Y,), od_profile (Y,)
+    """
+    Y, Z, X = mu_vol.shape
+    z0, x0 = Z // 2, X // 2
+    r = int(roi_radius_px)
+
+    zL, zR = max(0, z0 - r), min(Z, z0 + r + 1)
+    xL, xR = max(0, x0 - r), min(X, x0 + r + 1)
+
+    # Average OD in the central ROI for each slice y
+    od_profile = mu_vol[:, zL:zR, xL:xR].mean(axis=(1, 2))  # (Y,)
+
+    depth_mm = (np.arange(Y) - (Y // 2)) * mm_per_slice
+    rel_dose = od_profile / (float(np.max(od_profile)) + 1e-12)
+
+    return depth_mm, rel_dose, od_profile
 
 def save_depth_dose_plot(depth_mm, rel_dose, output_path="depth_dose.png",
                          title="Depth dose (relative)"):
@@ -162,6 +186,10 @@ depth_mm, rel_dose, od = depth_dose_curve_from_volume(
     roi_radius_px=10,
     axis_depth="z",  # or "x"
 )
+
+# Depth-dose (axial, along cylinder axis / radiation beam direction) → along Y
+mm_per_slice = 0.10  # set from the vertical scale (mm per pixel in Y)
+depth_mm, rel_dose, od = axial_depth_dose_curve(mu_vol, mm_per_slice, roi_radius_px=10)
 
 # Save the plot to a file
 save_depth_dose_plot(depth_mm, rel_dose, os.path.join(RECONSTRUCT_DIR, "depth_dose.png"))
