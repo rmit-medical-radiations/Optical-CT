@@ -56,14 +56,14 @@ def crop_sample_region(imgs, dark, flat):
         flat_cropped: (700, 700)
     """
 
-    half = WINDOW_EXTENT // 2
+    half = WINDOW_EXTENT_PX // 2
 
     # Vertical crop
-    y0 = SAMPLE_TOP
-    y1 = SAMPLE_TOP + WINDOW_EXTENT
+    y0 = SAMPLE_TOP_PX
+    y1 = SAMPLE_TOP_PX + WINDOW_EXTENT_PX
 
     # Horizontal crop centred on rotation axis
-    cx = SAMPLE_CENTRE_OF_ROTATION
+    cx = SAMPLE_CENTRE_OF_ROTATION_PX
     x0 = int(cx - half)
     x1 = int(cx + half)
 
