@@ -77,66 +77,95 @@ def crop_sample_region(imgs, dark, flat):
 
     return imgs_c, dark_c, flat_c
 
-def depth_dose_curve_from_volume(
+def dose_profile_from_volume(
     mu_vol: np.ndarray,
-    mm_per_pixel: float,
+    mm_per_pixel_xz: float,
+    depth_y: int | None = None,
     roi_radius_px: int = 10,
-    axis_depth: str = "z",
+    lateral_axis: str = "z",   # "z" or "x"
 ):
     """
+    Lateral dose profile across the sample cross-section at a chosen depth (Y slice).
+
     mu_vol: (Y, Z, X)
-    Returns depth_mm, rel_dose, od_profile
+    depth_y: which Y slice to use (default mid-slice)
+    roi_radius_px: half-width of averaging band perpendicular to the profile direction
+    lateral_axis:
+        "z" -> profile vs Z (front-back)
+        "x" -> profile vs X (left-right)
+
+    Returns:
+        pos_mm: position along the lateral axis (mm), centred at 0
+        rel_dose: normalized profile (max=1)
+        od_profile: raw OD profile
     """
     Y, Z, X = mu_vol.shape
-    y0 = Y // 2
-    z0 = Z // 2
-    x0 = X // 2
+    y0 = (Y // 2) if depth_y is None else int(depth_y)
 
     plane = mu_vol[y0]  # (Z, X)
+    zc, xc = Z // 2, X // 2
     r = int(roi_radius_px)
 
-    if axis_depth.lower() == "z":
-        xL = max(0, x0 - r)
-        xR = min(X, x0 + r + 1)
-        od_profile = plane[:, xL:xR].mean(axis=1)           # (Z,)
-        depth_mm = (np.arange(Z) - z0) * mm_per_pixel
+    if lateral_axis.lower() == "z":
+        # For each z, average a small band around the central x
+        xL, xR = max(0, xc - r), min(X, xc + r + 1)
+        od_profile = plane[:, xL:xR].mean(axis=1)  # (Z,)
+        pos_mm = (np.arange(Z) - zc) * mm_per_pixel_xz
 
-    elif axis_depth.lower() == "x":
-        zL = max(0, z0 - r)
-        zR = min(Z, z0 + r + 1)
-        od_profile = plane[zL:zR, :].mean(axis=0)           # (X,)
-        depth_mm = (np.arange(X) - x0) * mm_per_pixel
+    elif lateral_axis.lower() == "x":
+        # For each x, average a small band around the central z
+        zL, zR = max(0, zc - r), min(Z, zc + r + 1)
+        od_profile = plane[zL:zR, :].mean(axis=0)  # (X,)
+        pos_mm = (np.arange(X) - xc) * mm_per_pixel_xz
 
     else:
-        raise ValueError("axis_depth must be 'z' or 'x'")
+        raise ValueError("lateral_axis must be 'z' or 'x'")
 
     rel_dose = od_profile / (float(np.max(od_profile)) + 1e-12)
-    return depth_mm, rel_dose, od_profile
+    return pos_mm, rel_dose, od_profile
 
-def axial_depth_dose_curve(
+def depth_dose_from_central_axis(
     mu_vol: np.ndarray,
-    mm_per_slice: float,
+    mm_per_slice_y: float,
     roi_radius_px: int = 10,
 ):
     """
+    Depth-dose along the cylinder axis (Y), using the CENTRAL value extracted
+    from each depth's lateral cross-section by averaging a small central ROI.
+
     mu_vol: (Y, Z, X)
-    Depth is along Y (cylinder axis / radiation beam direction).
-    Returns depth_mm (Y,), rel_dose (Y,), od_profile (Y,)
+    mm_per_slice_y: mm per voxel along Y
+    roi_radius_px: radius of central ROI in the (Z,X) plane
+
+    Returns:
+        depth_mm: (Y,) depth along Y, centred at 0
+        rel_dose: (Y,) normalized (max=1)
+        od_depth: (Y,) raw OD values
     """
     Y, Z, X = mu_vol.shape
-    z0, x0 = Z // 2, X // 2
+    zc, xc = Z // 2, X // 2
     r = int(roi_radius_px)
 
-    zL, zR = max(0, z0 - r), min(Z, z0 + r + 1)
-    xL, xR = max(0, x0 - r), min(X, x0 + r + 1)
+    zL, zR = max(0, zc - r), min(Z, zc + r + 1)
+    xL, xR = max(0, xc - r), min(X, xc + r + 1)
 
-    # Average OD in the central ROI for each slice y
-    od_profile = mu_vol[:, zL:zR, xL:xR].mean(axis=(1, 2))  # (Y,)
+    # central-axis value per depth (mean over central ROI)
+    od_depth = mu_vol[:, zL:zR, xL:xR].mean(axis=(1, 2))  # (Y,)
 
-    depth_mm = (np.arange(Y) - (Y // 2)) * mm_per_slice
-    rel_dose = od_profile / (float(np.max(od_profile)) + 1e-12)
+    depth_mm = (np.arange(Y) - (Y // 2)) * mm_per_slice_y
+    rel_dose = od_depth / (float(np.max(od_depth)) + 1e-12)
+    return depth_mm, rel_dose, od_depth
 
-    return depth_mm, rel_dose, od_profile
+def save_dose_profile_plot(pos_mm, rel_dose, output_path, title="Dose profile"):
+    plt.figure()
+    plt.plot(pos_mm, rel_dose)
+    plt.xlabel("Position (mm)")
+    plt.ylabel("Relative Dose")
+    plt.title(title)
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
 
 def save_depth_dose_plot(depth_mm, rel_dose, output_path="depth_dose.png",
                          title="Depth dose (relative)"):
@@ -178,18 +207,31 @@ angles_deg = np.arange(P.shape[0], dtype=np.float32) * 2.0
 mu_vol = recon_volume_fbp(P, angles_deg)
 np.save(os.path.join(RECONSTRUCT_DIR, "attenuation_volume.npy"), mu_vol)
 
-# Compute the depth-dose from a small ROI around the centre
-mm_per_pixel = 43 / 454
-depth_mm, rel_dose, od = depth_dose_curve_from_volume(
+# Compute the dose profiles at each slice
+mm_per_pixel_xz = 43 / 454
+Y = mu_vol.shape[0]
+
+for y in range(Y):
+    pos_mm, rel_dose, _ = dose_profile_from_volume(
+        mu_vol,
+        mm_per_pixel_xz=mm_per_pixel_xz,
+        depth_y=y,
+        roi_radius_px=10,
+        lateral_axis="z",
+    )
+
+    save_dose_profile_plot(
+        pos_mm,
+        rel_dose,
+        os.path.join(RECONSTRUCT_DIR, f"profile_depth_{y:04d}.png"),
+        title=f"Dose profile (depth index {y})"
+    )
+
+# Depth-dose along Y (dose beam direction)
+mm_per_slice_y = 0.01  # from calibration image
+depth_mm, rel_dose, _ = depth_dose_from_central_axis(
     mu_vol,
-    mm_per_pixel=mm_per_pixel,
+    mm_per_slice_y=mm_per_slice_y,
     roi_radius_px=10,
-    axis_depth="z",  # or "x"
 )
-
-# Depth-dose (axial, along cylinder axis / radiation beam direction) → along Y
-mm_per_slice = 0.10  # set from the vertical scale (mm per pixel in Y)
-depth_mm, rel_dose, od = axial_depth_dose_curve(mu_vol, mm_per_slice, roi_radius_px=10)
-
-# Save the plot to a file
 save_depth_dose_plot(depth_mm, rel_dose, os.path.join(RECONSTRUCT_DIR, "depth_dose.png"))
