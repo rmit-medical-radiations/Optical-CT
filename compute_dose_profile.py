@@ -9,10 +9,9 @@ import matplotlib.pyplot as plt
 from pipeline_timer import PipelineTimer
 
 
-SAMPLE_TOP = 280                    # pixels from the image top edge
-SAMPLE_CENTRE_OF_ROTATION = 995     # pixels from the image left edge
-SAMPLE_EXTENT = 700                 # pixels in height and width
-
+SAMPLE_TOP_PX = 280                     # pixels from the image top edge
+SAMPLE_CENTRE_OF_ROTATION_PX = 995      # pixels from the image left edge
+WINDOW_EXTENT_PX = 700                  # reconstruction window pixels in height and width
 
 def load_png_stack(proj_dir, pattern="*.png"):
     files = sorted(glob.glob(os.path.join(proj_dir, pattern)))
@@ -57,11 +56,11 @@ def crop_sample_region(imgs, dark, flat):
         flat_cropped: (700, 700)
     """
 
-    half = SAMPLE_EXTENT // 2
+    half = WINDOW_EXTENT // 2
 
     # Vertical crop
     y0 = SAMPLE_TOP
-    y1 = SAMPLE_TOP + SAMPLE_EXTENT
+    y1 = SAMPLE_TOP + WINDOW_EXTENT
 
     # Horizontal crop centred on rotation axis
     cx = SAMPLE_CENTRE_OF_ROTATION
@@ -130,7 +129,17 @@ def depth_dose_from_central_axis(
     mu_vol: np.ndarray,
     mm_per_slice_y: float,
     roi_radius_px: int = 10,
+    threshold_fraction: float = 0.05,
 ):
+    """
+    Computes central-axis depth-dose only within the sample extent.
+
+    mu_vol: (Y, Z, X)
+    mm_per_slice_y: physical spacing along Y
+    roi_radius_px: ROI radius around the central axis
+    threshold_fraction: fraction of max OD used to detect sample extent
+    """
+
     Y, Z, X = mu_vol.shape
     zc, xc = Z // 2, X // 2
     r = int(roi_radius_px)
@@ -138,9 +147,21 @@ def depth_dose_from_central_axis(
     zL, zR = max(0, zc - r), min(Z, zc + r + 1)
     xL, xR = max(0, xc - r), min(X, xc + r + 1)
 
+    # central-axis OD vs depth
     od_depth = mu_vol[:, zL:zR, xL:xR].mean(axis=(1, 2))
 
-    depth_mm = np.arange(Y) * mm_per_slice_y
+    # detect sample extent
+    thresh = threshold_fraction * od_depth.max()
+    valid = np.where(od_depth > thresh)[0]
+
+    y0 = valid[0]
+    y1 = valid[-1] + 1
+
+    od_depth = od_depth[y0:y1]
+
+    # depth from sample surface
+    depth_mm = np.arange(len(od_depth)) * mm_per_slice_y
+
     rel_dose = od_depth / (float(np.max(od_depth)) + 1e-12)
 
     return depth_mm, rel_dose, od_depth
