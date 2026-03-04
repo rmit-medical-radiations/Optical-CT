@@ -6,7 +6,7 @@ from skimage.transform import iradon
 import shutil
 import numpy as np
 import matplotlib.pyplot as plt
-import PipelineTimer
+from pipeline_timer import PipelineTimer
 
 
 SAMPLE_TOP = 280                    # pixels from the image top edge
