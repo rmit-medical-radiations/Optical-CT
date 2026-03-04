@@ -224,7 +224,7 @@ with t.step("Compute dose profiles"):
 
 # Depth-dose along Y (dose beam direction)
 with t.step("Compute depth dose"):
-    mm_per_slice_y = 0.01  # from calibration image
+    mm_per_slice_y = 0.1  # from calibration image
     depth_mm, rel_dose, _ = depth_dose_from_central_axis(
         mu_vol,
         mm_per_slice_y=mm_per_slice_y,
