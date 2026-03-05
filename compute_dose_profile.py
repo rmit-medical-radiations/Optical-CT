@@ -7,6 +7,7 @@ import shutil
 import numpy as np
 import matplotlib.pyplot as plt
 from pipeline_timer import PipelineTimer
+import nibabel as nib
 
 
 SAMPLE_TOP_PX = 280                     # pixels from the image top edge
@@ -205,14 +206,21 @@ def get_or_create_attenuation_volume(
     """
 
     if os.path.exists(path):
-        print(f"Loading existing attenuation volume: {path}")
+        print(f"Loading existing: {path}")
         return np.load(path)
 
-    print("Reconstructing attenuation volume...")
+    print("Reconstructing...")
     mu_vol = recon_volume_fbp(projections, angles_deg)
 
     np.save(path, mu_vol)
     print(f"Saved attenuation volume to: {path}")
+
+    # save as nifti for visualisation
+    # current shape: (Y, Z, X)
+    vol = np.transpose(mu_vol, (1, 0, 2))  # -> (Z, Y, X)
+    affine = np.eye(4)
+    nii = nib.Nifti1Image(vol, affine)
+    nib.save(nii, "attenuation_volume.nii.gz")
 
     return mu_vol
 
@@ -243,7 +251,7 @@ with t.step("Calculate line integrals"):
     angles_deg = np.arange(P.shape[0], dtype=np.float32) * 2.0
 
 # Reconstruct attenuation volume (slice-by-slice FBP)
-with t.step("Reconstruct attenuation volume"):
+with t.step("Attenuation volume"):
     attenuation_path = os.path.join(RECONSTRUCT_DIR, "attenuation_volume.npy")
     mu_vol = get_or_create_attenuation_volume(
         attenuation_path,
