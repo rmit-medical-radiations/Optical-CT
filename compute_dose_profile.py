@@ -8,12 +8,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pipeline_timer import PipelineTimer
 import nibabel as nib
+from pathlib import Path
 
 
 SAMPLE_TOP_PX = 280                     # pixels from the image top edge
 SAMPLE_CENTRE_OF_ROTATION_PX = 995      # pixels from the image left edge
 WINDOW_EXTENT_PX = 700                  # reconstruction window pixels in height and width
 SAMPLE_HEIGHT_PX = 570
+
+def replace_extension(path, new_ext):
+    return str(Path(path).with_suffix(new_ext))
 
 def load_png_stack(proj_dir, pattern="*.png"):
     files = sorted(glob.glob(os.path.join(proj_dir, pattern)))
@@ -213,14 +217,15 @@ def get_or_create_attenuation_volume(
     mu_vol = recon_volume_fbp(projections, angles_deg)
 
     np.save(path, mu_vol)
-    print(f"Saved attenuation volume to: {path}")
 
     # save as nifti for visualisation
     # current shape: (Y, Z, X)
     vol = np.transpose(mu_vol, (1, 0, 2))  # -> (Z, Y, X)
     affine = np.eye(4)
     nii = nib.Nifti1Image(vol, affine)
-    nib.save(nii, "attenuation_volume.nii.gz")
+    nib.save(nii, replace_extension(path, ".nii.gz"))
+
+    print(f"Saved attenuation volume to: {path}")
 
     return mu_vol
 
