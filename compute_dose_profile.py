@@ -203,7 +203,7 @@ def save_depth_dose_plot(depth_mm, rel_dose, output_path="depth_dose.png",
     plt.figure()
     plt.plot(depth_mm, smoothed_rel_dose)
     plt.xlabel("Depth (mm) from top of sample")
-    plt.ylabel("Relative Dose (normalised, smoothed)")
+    plt.ylabel("Relative Dose (normalised)")
     plt.title(title)
     plt.grid(True)
     plt.tight_layout()
