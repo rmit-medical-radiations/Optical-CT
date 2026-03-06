@@ -198,9 +198,9 @@ def exponential_moving_average(values, alpha=0.3):
 
 def save_depth_dose_plot(depth_mm, rel_dose, output_path="depth_dose.png",
                          title="Depth dose (relative)"):
-    smoothed_rel_dose = exponential_moving_average(rel_dose, alpha=0.3)
+    smoothed_rel_dose = exponential_moving_average(rel_dose, alpha=0.1)
 
-    plt.figure()
+    plt.figure(figsize=(8, 3))
     plt.plot(depth_mm, smoothed_rel_dose)
     plt.xlabel("Depth (mm) from top of sample")
     plt.ylabel("Relative Dose (normalised)")
