@@ -14,7 +14,8 @@ from pathlib import Path
 SAMPLE_TOP_PX = 280                     # pixels from the image top edge
 SAMPLE_CENTRE_OF_ROTATION_PX = 995      # pixels from the image left edge
 WINDOW_EXTENT_PX = 700                  # reconstruction window pixels in height and width
-SAMPLE_HEIGHT_PX = 350
+SAMPLE_TOP_PX = 50                      # pixels from the top of the cropped projection
+SAMPLE_HEIGHT_PX = 450                  # pixels from the top of the sample to the bottom
 
 def replace_extension(path, new_ext):
     return str(Path(path).with_suffix(new_ext))
@@ -139,13 +140,13 @@ def depth_dose_from_central_axis(
     roi_radius_px: int = 10,
 ):
     """
-    Compute depth-dose along Y within the actual sample extent.
+    Compute depth-dose along Y within the sample extent.
 
     mu_vol: (Y, Z, X)
     mm_per_slice_y: mm per voxel along Y
-    sample_top_px: sample start row in the cropped reconstruction
-    sample_height_px: sample height in pixels
-    roi_radius_px: central ROI radius in the X-Z plane
+    sample_top_px: sample top row in the cropped reconstruction
+    sample_height_px: sample height in pixels, relative to sample_top_px
+    roi_radius_px: ROI radius around the central axis
     """
 
     Y, Z, X = mu_vol.shape
@@ -317,7 +318,7 @@ with t.step("Compute depth dose"):
     depth_mm, rel_dose, od_depth = depth_dose_from_central_axis(
         mu_vol,
         mm_per_slice_y=mm_per_slice_y,
-        sample_top_px=0,
+        sample_top_px=SAMPLE_TOP_PX,
         sample_height_px=SAMPLE_HEIGHT_PX,
         roi_radius_px=10,
     )
