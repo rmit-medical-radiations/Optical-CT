@@ -14,7 +14,7 @@ from pathlib import Path
 SAMPLE_TOP_PX = 280                     # pixels from the image top edge
 SAMPLE_CENTRE_OF_ROTATION_PX = 995      # pixels from the image left edge
 WINDOW_EXTENT_PX = 700                  # reconstruction window pixels in height and width
-SAMPLE_HEIGHT_PX = 570
+SAMPLE_HEIGHT_PX = 350
 
 def replace_extension(path, new_ext):
     return str(Path(path).with_suffix(new_ext))
@@ -134,33 +134,30 @@ def dose_profile_from_volume(
 def depth_dose_from_central_axis(
     mu_vol: np.ndarray,
     mm_per_slice_y: float,
+    sample_top_px: int,
     sample_height_px: int,
     roi_radius_px: int = 10,
 ):
     """
-    Compute depth-dose along the cylinder axis (Y) only within the sample height.
+    Compute depth-dose along Y within the actual sample extent.
 
     mu_vol: (Y, Z, X)
     mm_per_slice_y: mm per voxel along Y
-    sample_height_px: height of the sample in pixels (e.g. 570)
-    roi_radius_px: ROI radius around the central axis
+    sample_top_px: sample start row in the cropped reconstruction
+    sample_height_px: sample height in pixels
+    roi_radius_px: central ROI radius in the X-Z plane
     """
 
     Y, Z, X = mu_vol.shape
     zc, xc = Z // 2, X // 2
     r = int(roi_radius_px)
 
-    # central ROI bounds
     zL, zR = max(0, zc - r), min(Z, zc + r + 1)
     xL, xR = max(0, xc - r), min(X, xc + r + 1)
 
-    # determine sample region centred in reconstruction
-    y_center = Y // 2
-    half = sample_height_px // 2
-    y0 = max(0, y_center - half)
-    y1 = min(Y, y_center + half)
+    y0 = int(sample_top_px)
+    y1 = min(Y, y0 + int(sample_height_px))
 
-    # central-axis OD vs depth
     od_depth = mu_vol[y0:y1, zL:zR, xL:xR].mean(axis=(1, 2))
 
     depth_mm = np.arange(len(od_depth)) * mm_per_slice_y
@@ -183,7 +180,7 @@ def save_depth_dose_plot(depth_mm, rel_dose, output_path="depth_dose.png",
                          title="Depth dose (relative)"):
     plt.figure()
     plt.plot(depth_mm, rel_dose)
-    plt.xlabel("Depth (mm)")
+    plt.xlabel("Depth (mm) from top of sample")
     plt.ylabel("Relative Dose (normalised)")
     plt.title(title)
     plt.grid(True)
@@ -191,6 +188,33 @@ def save_depth_dose_plot(depth_mm, rel_dose, output_path="depth_dose.png",
     plt.savefig(output_path, dpi=300)
     plt.close()
     print(f"saved the depth dose plot in {output_path}")
+
+def export_orthogonal_mid_slices(mu_vol: np.ndarray, out_dir: str, prefix: str = "atten"):
+    """
+    Saves three mid-slices:
+      Y-mid: mu_vol[Y//2, :, :]  (Z,X)  horizontal cross-section
+      Z-mid: mu_vol[:, Z//2, :]  (Y,X)  vertical
+      X-mid: mu_vol[:, :, X//2]  (Y,Z)  vertical
+
+    Uses robust intensity scaling (1st–99th percentile).
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    Y, Z, X = mu_vol.shape
+    y0, z0, x0 = Y // 2, Z // 2, X // 2
+
+    vmin, vmax = np.percentile(mu_vol, (1, 99))
+
+    def save(img2d, name):
+        plt.figure()
+        plt.imshow(img2d, cmap="gray", vmin=vmin, vmax=vmax)
+        plt.axis("off")
+        plt.tight_layout(pad=0)
+        plt.savefig(os.path.join(out_dir, f"{prefix}_{name}.png"), dpi=300)
+        plt.close()
+
+    save(mu_vol[y0, :, :], "slice_Ymid_ZX")
+    save(mu_vol[:, z0, :], "slice_Zmid_YX")
+    save(mu_vol[:, :, x0], "slice_Xmid_YZ")
 
 def get_or_create_attenuation_volume(
     path: str,
@@ -216,15 +240,11 @@ def get_or_create_attenuation_volume(
     print("Reconstructing...")
     mu_vol = recon_volume_fbp(projections, angles_deg)
 
+    # save as .npy for next steps
     np.save(path, mu_vol)
 
-    # save as nifti for visualisation
-    # current shape: (Y, Z, X)
-    vol = np.transpose(mu_vol, (1, 0, 2))  # -> (Z, Y, X)
-    affine = np.eye(4)
-    nii = nib.Nifti1Image(vol, affine)
-    nib.save(nii, replace_extension(path, ".nii.gz"))
-
+    # save for visualisation
+    export_orthogonal_mid_slices(mu_vol, out_dir=RECONSTRUCT_DIR, prefix="mu")
     print(f"Saved attenuation volume to: {path}")
 
     return mu_vol
@@ -250,6 +270,12 @@ with t.step("Load PNG stack"):
 
     # Crop images to focus on the sample
     imgs, dark, flat = crop_sample_region(imgs, dark, flat)
+
+    # Visualise crop
+    example_img = imgs[0]
+    img_norm = cv2.normalize(example_img, None, 0, 255, cv2.NORM_MINMAX)
+    img_uint8 = img_norm.astype(np.uint8)
+    cv2.imwrite(os.path.join(RECONSTRUCT_DIR, "example_cropped_projection.png"), img_uint8)
 
 with t.step("Calculate line integrals"):
     P = line_integrals_from_png(imgs, dark, flat)  # (A,H,W)
@@ -288,9 +314,10 @@ with t.step("Compute dose profiles"):
 # Depth-dose along Y (dose beam direction)
 with t.step("Compute depth dose"):
     mm_per_slice_y = 0.1  # from calibration image
-    depth_mm, rel_dose, _ = depth_dose_from_central_axis(
+    depth_mm, rel_dose, od_depth = depth_dose_from_central_axis(
         mu_vol,
         mm_per_slice_y=mm_per_slice_y,
+        sample_top_px=0,
         sample_height_px=SAMPLE_HEIGHT_PX,
         roi_radius_px=10,
     )
