@@ -177,12 +177,33 @@ def save_dose_profile_plot(pos_mm, rel_dose, output_path, title="Dose profile"):
     plt.savefig(output_path, dpi=300)
     plt.close()
 
+def exponential_moving_average(values, alpha=0.3):
+    """
+    Applies exponential moving average smoothing.
+    
+    Args:
+        values: list or array of values (e.g. loss history)
+        alpha: smoothing factor (0 < alpha ≤ 1), smaller = more smoothing
+
+    Returns:
+        List of smoothed values
+    """
+    smoothed = []
+    for i, val in enumerate(values):
+        if i == 0:
+            smoothed.append(val)
+        else:
+            smoothed.append(alpha * val + (1 - alpha) * smoothed[-1])
+    return smoothed
+
 def save_depth_dose_plot(depth_mm, rel_dose, output_path="depth_dose.png",
                          title="Depth dose (relative)"):
+    smoothed_rel_dose = exponential_moving_average(rel_dose, alpha=0.3)
+
     plt.figure()
-    plt.plot(depth_mm, rel_dose)
+    plt.plot(depth_mm, smoothed_rel_dose)
     plt.xlabel("Depth (mm) from top of sample")
-    plt.ylabel("Relative Dose (normalised)")
+    plt.ylabel("Relative Dose (normalised, smoothed)")
     plt.title(title)
     plt.grid(True)
     plt.tight_layout()
