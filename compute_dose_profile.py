@@ -132,21 +132,21 @@ def dose_profile_from_volume(
     rel_dose = od_profile / (float(np.max(od_profile)) + 1e-12)
     return pos_mm, rel_dose, od_profile
 
+import numpy as np
+
 def depth_dose_from_central_axis(
     mu_vol: np.ndarray,
     mm_per_slice_y: float,
     sample_top_px: int,
     sample_height_px: int,
     roi_radius_px: int = 10,
+    edge_baseline_px: int = 50,
+    invert: bool = True,
 ):
     """
-    Compute depth-dose along Y within the sample extent.
+    Compute relative depth-dose along Y within the sample extent.
 
-    mu_vol: (Y, Z, X)
-    mm_per_slice_y: mm per voxel along Y
-    sample_top_px: sample top row in the cropped reconstruction
-    sample_height_px: sample height in pixels, relative to sample_top_px
-    roi_radius_px: ROI radius around the central axis
+    invert=True is often needed if higher dose appears as lower reconstructed values.
     """
 
     Y, Z, X = mu_vol.shape
@@ -161,10 +161,22 @@ def depth_dose_from_central_axis(
 
     od_depth = mu_vol[y0:y1, zL:zR, xL:xR].mean(axis=(1, 2))
 
-    depth_mm = np.arange(len(od_depth)) * mm_per_slice_y
-    rel_dose = od_depth / (float(np.max(od_depth)) + 1e-12)
+    # baseline from top and bottom edges of sample
+    n = min(edge_baseline_px, len(od_depth) // 4)
+    baseline = np.mean(np.concatenate([od_depth[:n], od_depth[-n:]]))
 
-    return depth_mm, rel_dose, od_depth
+    if invert:
+        dose_signal = baseline - od_depth
+    else:
+        dose_signal = od_depth - baseline
+
+    # clamp small negatives
+    dose_signal = np.maximum(dose_signal, 0)
+
+    rel_dose = dose_signal / (np.max(dose_signal) + 1e-12)
+    depth_mm = np.arange(len(od_depth)) * mm_per_slice_y
+
+    return depth_mm, rel_dose, dose_signal, od_depth
 
 def save_dose_profile_plot(pos_mm, rel_dose, output_path, title="Dose profile"):
     plt.figure()
@@ -336,12 +348,13 @@ with t.step("Compute dose profiles"):
 # Depth-dose along Y (dose beam direction)
 with t.step("Compute depth dose"):
     mm_per_slice_y = 0.1  # from calibration image
-    depth_mm, rel_dose, od_depth = depth_dose_from_central_axis(
+    depth_mm, rel_dose, dose_signal, od_depth = depth_dose_from_central_axis(
         mu_vol,
         mm_per_slice_y=mm_per_slice_y,
         sample_top_px=SAMPLE_TOP_PX,
         sample_height_px=SAMPLE_HEIGHT_PX,
         roi_radius_px=10,
+        invert=False
     )
     save_depth_dose_plot(depth_mm, rel_dose, os.path.join(RECONSTRUCT_DIR, "depth_dose.png"))
 
