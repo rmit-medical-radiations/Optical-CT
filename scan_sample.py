@@ -11,6 +11,7 @@ import json
 import sys
 import termios
 import tty
+from pathlib import Path
 
 os.environ['BLINKA_FT232H'] = '1'
 import board
@@ -228,6 +229,7 @@ def set_lamp_off():
 ##########################################################
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--run_name', type=str, help='Name of this run.', required=True)
 parser.add_argument('--degree_increments', type=positive_int, default=10, help='Degree increments.', required=False)
 parser.add_argument('--oct_stack', type=positive_int, default=3, help='Number of averaged images per step.', required=False)
 parser.add_argument('--display_overlay', action='store_true', help='Show an overlay on the image for debugging.', required=False)
@@ -266,8 +268,8 @@ CALIBRATED_HEIGHT = 1520
 
 # directories
 BASE_DIR = f"{expanduser('~')}/OCT"
-
-IMAGE_DIR = f"{BASE_DIR}/images"
+RUN_DIR = f"{BASE_DIR}/{args.run_name}"
+IMAGE_DIR = f"{RUN_DIR}/images"
 if os.path.exists(IMAGE_DIR):
     shutil.rmtree(IMAGE_DIR)
 os.makedirs(IMAGE_DIR)
@@ -276,14 +278,15 @@ CONFIG_DIR = f"{BASE_DIR}/config"
 if not os.path.exists(CONFIG_DIR):
     os.makedirs(CONFIG_DIR)
 
+CALIBRATION_JSON_PATH = f"{Path(__file__).resolve().parent}/camera_calibration_charuco.json"
+
 
 def run_scan():
     try:
         # -----------------------------
         # Load calibration
         # -----------------------------
-        CALIB_JSON = "camera_calibration_charuco.json"
-        with open(CALIB_JSON, "r") as f:
+        with open(CALIBRATION_JSON_PATH, "r") as f:
             calib = json.load(f)
 
         K = np.array(calib["K"], dtype=np.float64)
