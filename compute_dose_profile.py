@@ -287,9 +287,10 @@ def get_or_create_attenuation_volume(
 
 # Setup
 BASE_DIR = f"{expanduser('~')}/OCT"
-IMAGE_DIR = f"{BASE_DIR}/images"
+RUN_DIR = f"{BASE_DIR}/{args.run_name}"
+IMAGE_DIR = f"{RUN_DIR}/images"
+RECONSTRUCT_DIR = f"{RUN_DIR}/reconstruct"
 CONFIG_DIR = f"{BASE_DIR}/config"
-RECONSTRUCT_DIR = f"{BASE_DIR}/reconstruct"
 
 if not os.path.exists(RECONSTRUCT_DIR):
     os.makedirs(RECONSTRUCT_DIR)
