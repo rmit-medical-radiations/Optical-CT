@@ -9,13 +9,14 @@ import matplotlib.pyplot as plt
 from pipeline_timer import PipelineTimer
 import nibabel as nib
 from pathlib import Path
+import argparse
 
 
-SAMPLE_TOP_PX = 280                     # pixels from the image top edge
-SAMPLE_CENTRE_OF_ROTATION_PX = 995      # pixels from the image left edge
-WINDOW_EXTENT_PX = 700                  # reconstruction window pixels in height and width
-SAMPLE_TOP_PX = 50                      # pixels from the top of the cropped projection
-SAMPLE_HEIGHT_PX = 450                  # pixels from the top of the sample to the bottom
+def positive_int(value):
+    ivalue = int(value)
+    if ivalue < 1:
+        raise argparse.ArgumentTypeError(f"Expected integer ≥ 1, got {value}")
+    return ivalue
 
 def replace_extension(path, new_ext):
     return str(Path(path).with_suffix(new_ext))
@@ -51,7 +52,7 @@ def recon_volume_fbp(P, angles_deg, filter_name="hann", circle=True, output_size
                         circle=circle, output_size=output_size).astype(np.float32)
     return vol
 
-def crop_sample_region(imgs, dark, flat):
+def crop_reconstruction_window(imgs, dark, flat, cx, top, extent):
     """
     imgs: (A, H, W)
     dark: (H, W)
@@ -63,14 +64,13 @@ def crop_sample_region(imgs, dark, flat):
         flat_cropped: (700, 700)
     """
 
-    half = WINDOW_EXTENT_PX // 2
+    half = extent // 2
 
     # Vertical crop
-    y0 = SAMPLE_TOP_PX
-    y1 = SAMPLE_TOP_PX + WINDOW_EXTENT_PX
+    y0 = top
+    y1 = y0 + extent
 
     # Horizontal crop centred on rotation axis
-    cx = SAMPLE_CENTRE_OF_ROTATION_PX
     x0 = int(cx - half)
     x1 = int(cx + half)
 
@@ -85,6 +85,7 @@ def crop_sample_region(imgs, dark, flat):
 
     return imgs_c, dark_c, flat_c
 
+# this function analyses the full cropped (square) reconstruction image
 def dose_profile_from_volume(
     mu_vol: np.ndarray,
     mm_per_pixel_xz: float,
@@ -132,8 +133,7 @@ def dose_profile_from_volume(
     rel_dose = od_profile / (float(np.max(od_profile)) + 1e-12)
     return pos_mm, rel_dose, od_profile
 
-import numpy as np
-
+# this function constrains analysis to the ROI (i.e. the sample)
 def depth_dose_from_central_axis(
     mu_vol: np.ndarray,
     mm_per_slice_y: float,
@@ -161,7 +161,7 @@ def depth_dose_from_central_axis(
 
     od_depth = mu_vol[y0:y1, zL:zR, xL:xR].mean(axis=(1, 2))
 
-    # baseline from top and bottom edges of sample
+    # number of depth pixels near the sample edges (top and bottom) used to estimate the baseline optical density.
     n = min(edge_baseline_px, len(od_depth) // 4)
     baseline = np.mean(np.concatenate([od_depth[:n], od_depth[-n:]]))
 
@@ -283,13 +283,25 @@ def get_or_create_attenuation_volume(
 
     return mu_vol
 
+
 ####################################################
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--run_name', type=str, help='Name of this run.', required=True)
+parser.add_argument('--depth_sample_top', type=positive_int, default=50, help='Number of pixels from the top of the reconstruction window to the sample ROI.', required=False)
+parser.add_argument('--depth_sample_height', type=positive_int, default=450, help='Vertical height of the sample ROI in pixels.', required=False)
+parser.add_argument('--crop_centre_x', type=positive_int, default=995, help='Pixels from the left edge of the uncropped projection to the centre of rotation.', required=False)
+parser.add_argument('--crop_top', type=positive_int, default=50, help='Number of pixels to crop from top of raw image.', required=False)
+parser.add_argument('--crop_extent', type=positive_int, default=700, help='Reconstruction window height and width in pixels.', required=False)
+args = parser.parse_args()
+
 
 # Setup
 BASE_DIR = f"{expanduser('~')}/OCT"
 RUN_DIR = f"{BASE_DIR}/{args.run_name}"
 IMAGE_DIR = f"{RUN_DIR}/images"
 RECONSTRUCT_DIR = f"{RUN_DIR}/reconstruct"
+
 CONFIG_DIR = f"{BASE_DIR}/config"
 
 if not os.path.exists(RECONSTRUCT_DIR):
@@ -304,7 +316,7 @@ with t.step("Load PNG stack"):
     flat = np.load(os.path.join(CONFIG_DIR, "flat.npy")).astype(np.float32)
 
     # Crop images to focus on the sample
-    imgs, dark, flat = crop_sample_region(imgs, dark, flat)
+    imgs, dark, flat = crop_reconstruction_window(imgs, dark, flat, cx=args.crop_centre_x, top=args.crop_top, extent=args.crop_extent)
 
     # Visualise crop
     example_img = imgs[0]
@@ -352,8 +364,8 @@ with t.step("Compute depth dose"):
     depth_mm, rel_dose, dose_signal, od_depth = depth_dose_from_central_axis(
         mu_vol,
         mm_per_slice_y=mm_per_slice_y,
-        sample_top_px=SAMPLE_TOP_PX,
-        sample_height_px=SAMPLE_HEIGHT_PX,
+        sample_top_px=args.depth_sample_top,
+        sample_height_px=args.depth_sample_height,
         roi_radius_px=10,
         invert=False
     )
