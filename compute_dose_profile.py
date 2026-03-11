@@ -287,7 +287,7 @@ def get_or_create_attenuation_volume(
 ####################################################
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--run_name', type=str, help='Name of this run.', required=True)
+parser.add_argument('--scan_name', type=str, help='Name of this scan.', required=True)
 parser.add_argument('--depth_sample_top', type=positive_int, default=50, help='Number of pixels from the top of the reconstruction window to the sample ROI.', required=False)
 parser.add_argument('--depth_sample_height', type=positive_int, default=450, help='Vertical height of the sample ROI in pixels.', required=False)
 parser.add_argument('--crop_centre_x', type=positive_int, default=995, help='Pixels from the left edge of the uncropped projection to the centre of rotation.', required=False)
@@ -298,9 +298,9 @@ args = parser.parse_args()
 
 # Setup
 BASE_DIR = f"{expanduser('~')}/OCT"
-RUN_DIR = f"{BASE_DIR}/{args.run_name}"
-IMAGE_DIR = f"{RUN_DIR}/images"
-RECONSTRUCT_DIR = f"{RUN_DIR}/reconstruct"
+SCAN_DIR = f"{BASE_DIR}/scans/{args.scan_name}"
+IMAGE_DIR = f"{SCAN_DIR}/images"
+RECONSTRUCT_DIR = f"{SCAN_DIR}/reconstruct"
 
 CONFIG_DIR = f"{BASE_DIR}/config"
 
