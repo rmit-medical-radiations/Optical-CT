@@ -289,12 +289,13 @@ def get_or_create_attenuation_volume(
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--scan_name', type=str, help='Name of this scan.', required=True)
-parser.add_argument('--depth_sample_top', type=positive_int, default=50, help='Number of pixels from the top of the reconstruction window to the sample ROI.', required=False)
-parser.add_argument('--depth_sample_height', type=positive_int, default=450, help='Vertical height of the sample ROI in pixels.', required=False)
 parser.add_argument('--crop_centre_x', type=positive_int, default=995, help='Pixels from the left edge of the uncropped projection to the centre of rotation.', required=False)
 parser.add_argument('--crop_top', type=positive_int, default=50, help='Number of pixels to crop from top of raw image.', required=False)
 parser.add_argument('--crop_extent', type=positive_int, default=700, help='Reconstruction window height and width in pixels.', required=False)
 parser.add_argument("--new_volume", action="store_true", help="Force computation of a new attenuation volume.")
+parser.add_argument('--depth_sample_top', type=positive_int, default=50, help='Number of pixels from the top of the reconstruction window to the sample ROI.', required=False)
+parser.add_argument('--depth_sample_height', type=positive_int, default=450, help='Vertical height of the sample ROI in pixels.', required=False)
+parser.add_argument("--visualise_crop_only", action="store_true", help="Only load the images and preview the crop for setup purposes.")
 args = parser.parse_args()
 
 
@@ -336,52 +337,54 @@ with t.step("Load PNG stack"):
     img_uint8 = img_norm.astype(np.uint8)
     cv2.imwrite(os.path.join(RECONSTRUCT_DIR, "example_cropped_projection.png"), img_uint8)
 
-with t.step("Calculate line integrals"):
-    P = line_integrals_from_png(imgs, dark, flat)  # (A,H,W)
-    angles_deg = np.arange(P.shape[0], dtype=np.float32) * 2.0
+if not args.visualise_crop_only:
+    
+    with t.step("Calculate line integrals"):
+        P = line_integrals_from_png(imgs, dark, flat)  # (A,H,W)
+        angles_deg = np.arange(P.shape[0], dtype=np.float32) * 2.0
 
-# Reconstruct attenuation volume (slice-by-slice FBP)
-with t.step("Attenuation volume"):
-    attenuation_path = os.path.join(RECONSTRUCT_DIR, "attenuation_volume.npy")
-    mu_vol = get_or_create_attenuation_volume(
-        attenuation_path,
-        P,
-        angles_deg,
-        force_new=args.new_volume,
-    )
+    # Reconstruct attenuation volume (slice-by-slice FBP)
+    with t.step("Attenuation volume"):
+        attenuation_path = os.path.join(RECONSTRUCT_DIR, "attenuation_volume.npy")
+        mu_vol = get_or_create_attenuation_volume(
+            attenuation_path,
+            P,
+            angles_deg,
+            force_new=args.new_volume,
+        )
 
-# Compute the dose profiles at each slice
-mm_per_pixel_xz = 43 / 454
-Y = mu_vol.shape[0]
+    # Compute the dose profiles at each slice
+    mm_per_pixel_xz = 43 / 454
+    Y = mu_vol.shape[0]
 
-with t.step("Compute dose profiles"):
-    for y in range(Y):
-        pos_mm, rel_dose, _ = dose_profile_from_volume(
+    with t.step("Compute dose profiles"):
+        for y in range(Y):
+            pos_mm, rel_dose, _ = dose_profile_from_volume(
+                mu_vol,
+                mm_per_pixel_xz=mm_per_pixel_xz,
+                depth_y=y,
+                roi_radius_px=10,
+                lateral_axis="z",
+            )
+
+            save_dose_profile_plot(
+                pos_mm,
+                rel_dose,
+                os.path.join(DOSE_PROFILES_DIR, f"profile_depth_{y:04d}.png"),
+                title=f"Dose profile (depth index {y})"
+            )
+
+    # Depth-dose along Y (dose beam direction)
+    with t.step("Compute depth dose"):
+        mm_per_slice_y = 0.1  # from calibration image
+        depth_mm, rel_dose, dose_signal, od_depth = depth_dose_from_central_axis(
             mu_vol,
-            mm_per_pixel_xz=mm_per_pixel_xz,
-            depth_y=y,
+            mm_per_slice_y=mm_per_slice_y,
+            sample_top_px=args.depth_sample_top,
+            sample_height_px=args.depth_sample_height,
             roi_radius_px=10,
-            lateral_axis="z",
+            invert=False
         )
-
-        save_dose_profile_plot(
-            pos_mm,
-            rel_dose,
-            os.path.join(DOSE_PROFILES_DIR, f"profile_depth_{y:04d}.png"),
-            title=f"Dose profile (depth index {y})"
-        )
-
-# Depth-dose along Y (dose beam direction)
-with t.step("Compute depth dose"):
-    mm_per_slice_y = 0.1  # from calibration image
-    depth_mm, rel_dose, dose_signal, od_depth = depth_dose_from_central_axis(
-        mu_vol,
-        mm_per_slice_y=mm_per_slice_y,
-        sample_top_px=args.depth_sample_top,
-        sample_height_px=args.depth_sample_height,
-        roi_radius_px=10,
-        invert=False
-    )
-    save_depth_dose_plot(depth_mm, rel_dose, os.path.join(DEPTH_DOSE_DIR, "depth_dose.png"))
+        save_depth_dose_plot(depth_mm, rel_dose, os.path.join(DEPTH_DOSE_DIR, "depth_dose.png"))
 
 t.report()
