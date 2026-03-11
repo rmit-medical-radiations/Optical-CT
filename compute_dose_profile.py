@@ -254,6 +254,7 @@ def get_or_create_attenuation_volume(
     path: str,
     projections: np.ndarray,
     angles_deg: np.ndarray,
+    force_new: bool = False,
 ):
     """
     Load an existing attenuation volume if present, otherwise reconstruct it.
@@ -267,7 +268,7 @@ def get_or_create_attenuation_volume(
     mu_vol : np.ndarray
     """
 
-    if os.path.exists(path):
+    if os.path.exists(path) and not force_new:
         print(f"Loading existing: {path}")
         return np.load(path)
 
@@ -293,6 +294,7 @@ parser.add_argument('--depth_sample_height', type=positive_int, default=450, hel
 parser.add_argument('--crop_centre_x', type=positive_int, default=995, help='Pixels from the left edge of the uncropped projection to the centre of rotation.', required=False)
 parser.add_argument('--crop_top', type=positive_int, default=50, help='Number of pixels to crop from top of raw image.', required=False)
 parser.add_argument('--crop_extent', type=positive_int, default=700, help='Reconstruction window height and width in pixels.', required=False)
+parser.add_argument("--new_volume", action="store_true", help="Force computation of a new attenuation volume.")
 args = parser.parse_args()
 
 
@@ -345,6 +347,7 @@ with t.step("Attenuation volume"):
         attenuation_path,
         P,
         angles_deg,
+        force_new=args.new_volume,
     )
 
 # Compute the dose profiles at each slice
