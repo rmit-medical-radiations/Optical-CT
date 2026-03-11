@@ -10,6 +10,7 @@ from pipeline_timer import PipelineTimer
 import nibabel as nib
 from pathlib import Path
 import argparse
+import pandas as pd
 
 
 def positive_int(value):
@@ -386,5 +387,14 @@ if not args.skip_dose_profiling:
             invert=False
         )
         save_depth_dose_plot(depth_mm, rel_dose, os.path.join(DEPTH_DOSE_DIR, "depth_dose.png"))
+
+        # save dose data as a spreadsheet
+        df = pd.DataFrame({
+            "depth_mm": depth_mm,
+            "rel_dose": rel_dose,
+            "dose_signal": dose_signal,
+            "optical_density_depth": od_depth
+        })
+        df.to_excel(os.path.join(DEPTH_DOSE_DIR, "depth_dose.xlsx"), index=False)
 
 t.report()
