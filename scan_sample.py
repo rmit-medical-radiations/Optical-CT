@@ -187,7 +187,7 @@ def set_lamp_off():
 ##########################################################
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--run_name', type=str, help='Name of this run.', required=True)
+parser.add_argument('--scan_name', type=str, help='Name of this scan.', required=True)
 parser.add_argument('--degree_increments', type=positive_int, default=10, help='Degree increments.', required=False)
 parser.add_argument('--oct_stack', type=positive_int, default=3, help='Number of averaged images per step.', required=False)
 parser.add_argument('--display_overlay', action='store_true', help='Show an overlay on the image for debugging.', required=False)
