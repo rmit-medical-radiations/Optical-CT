@@ -125,48 +125,6 @@ def wait_until_stopped(ser, dn_char='A', timeout_s=10.0):
             if dn_char in buffer:
                 return
 
-def overlay_grid(
-    image,
-    step=20,
-    color=(0, 255, 0),
-    thickness=1
-):
-    """
-    Overlay a grid from the origin (top-left) in step-pixel increments.
-    """
-    h, w = image.shape[:2]
-
-    # Vertical lines (x direction)
-    for x in range(0, w, step):
-        cv2.line(image, (x, 0), (x, h), color, thickness)
-
-    # Horizontal lines (y direction)
-    for y in range(0, h, step):
-        cv2.line(image, (0, y), (w, y), color, thickness)
-
-    return image
-
-def crop_borders(
-    image,
-    top=0,
-    bottom=0,
-    left=0,
-    right=0
-):
-    """
-    Crop pixels from each border with safety checks.
-    """
-    h, w = image.shape[:2]
-
-    if top + bottom >= h or left + right >= w:
-        raise ValueError("Crop dimensions exceed image size")
-
-    return image[
-        top : h - bottom,
-        left : w - right
-    ]
-
-
 def take_photo(images_averaged=3):
     try:
         camera_url = f"{CAMERA_URL}/capture?stack={images_averaged}"
@@ -268,8 +226,8 @@ CALIBRATED_HEIGHT = 1520
 
 # directories
 BASE_DIR = f"{expanduser('~')}/OCT"
-RUN_DIR = f"{BASE_DIR}/{args.run_name}"
-IMAGE_DIR = f"{RUN_DIR}/images"
+SCAN_DIR = f"{BASE_DIR}/scans/{args.scan_name}"
+IMAGE_DIR = f"{SCAN_DIR}/images"
 if os.path.exists(IMAGE_DIR):
     shutil.rmtree(IMAGE_DIR)
 os.makedirs(IMAGE_DIR)
