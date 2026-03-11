@@ -301,11 +301,21 @@ BASE_DIR = f"{expanduser('~')}/OCT"
 SCAN_DIR = f"{BASE_DIR}/scans/{args.scan_name}"
 IMAGE_DIR = f"{SCAN_DIR}/images"
 RECONSTRUCT_DIR = f"{SCAN_DIR}/reconstruct"
+DOSE_PROFILES_DIR = f"{SCAN_DIR}/dose-profiles"
+DEPTH_DOSE_DIR = f"{SCAN_DIR}/depth-dose"
 
 CONFIG_DIR = f"{BASE_DIR}/config"
 
 if not os.path.exists(RECONSTRUCT_DIR):
     os.makedirs(RECONSTRUCT_DIR)
+
+if os.path.exists(DOSE_PROFILES_DIR):
+    shutil.rmtree(DOSE_PROFILES_DIR)
+os.makedirs(DOSE_PROFILES_DIR)
+
+if os.path.exists(DEPTH_DOSE_DIR):
+    shutil.rmtree(DEPTH_DOSE_DIR)
+os.makedirs(DEPTH_DOSE_DIR)
 
 t = PipelineTimer()
 
@@ -354,7 +364,7 @@ with t.step("Compute dose profiles"):
         save_dose_profile_plot(
             pos_mm,
             rel_dose,
-            os.path.join(RECONSTRUCT_DIR, f"profile_depth_{y:04d}.png"),
+            os.path.join(DOSE_PROFILES_DIR, f"profile_depth_{y:04d}.png"),
             title=f"Dose profile (depth index {y})"
         )
 
@@ -369,6 +379,6 @@ with t.step("Compute depth dose"):
         roi_radius_px=10,
         invert=False
     )
-    save_depth_dose_plot(depth_mm, rel_dose, os.path.join(RECONSTRUCT_DIR, "depth_dose.png"))
+    save_depth_dose_plot(depth_mm, rel_dose, os.path.join(DEPTH_DOSE_DIR, "depth_dose.png"))
 
 t.report()
