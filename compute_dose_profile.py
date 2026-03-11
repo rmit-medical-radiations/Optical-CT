@@ -295,7 +295,7 @@ parser.add_argument('--crop_extent', type=positive_int, default=700, help='Recon
 parser.add_argument("--new_volume", action="store_true", help="Force computation of a new attenuation volume.")
 parser.add_argument('--depth_sample_top', type=positive_int, default=1, help='Number of pixels from the top of the reconstruction window to the sample ROI.', required=False)
 parser.add_argument('--depth_sample_height', type=positive_int, default=450, help='Vertical height of the sample ROI in pixels.', required=False)
-parser.add_argument("--skip_dose_calculations", action="store_true", help="Only load the images and preview the crop for setup purposes.")
+parser.add_argument("--skip_dose_profiling", action="store_true", help="Only load the images and preview the crop for setup purposes.")
 args = parser.parse_args()
 
 
@@ -337,7 +337,7 @@ with t.step("Load PNG stack"):
     img_uint8 = img_norm.astype(np.uint8)
     cv2.imwrite(os.path.join(RECONSTRUCT_DIR, "example_cropped_projection.png"), img_uint8)
 
-if not args.skip_dose_calculations:
+if not args.skip_dose_profiling:
 
     with t.step("Calculate line integrals"):
         P = line_integrals_from_png(imgs, dark, flat)  # (A,H,W)
