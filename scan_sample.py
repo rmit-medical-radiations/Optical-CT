@@ -188,13 +188,12 @@ def set_lamp_off():
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--scan_name', type=str, help='Name of this scan.', required=True)
-parser.add_argument('--degree_increments', type=positive_int, default=10, help='Degree increments.', required=False)
+parser.add_argument('--degree_increments', type=positive_int, default=2, help='Degree increments.', required=False)
 parser.add_argument('--oct_stack', type=positive_int, default=3, help='Number of averaged images per step.', required=False)
-parser.add_argument('--display_overlay', action='store_true', help='Show an overlay on the image for debugging.', required=False)
 parser.add_argument("--new_dark", action="store_true", help="Force capture of new dark frame")
-parser.add_argument("--dark_stack", type=int, default=5, help="Number of frames to average for dark")
+parser.add_argument("--dark_stack", type=int, default=3, help="Number of frames to average for dark")
 parser.add_argument("--new_flat", action="store_true", help="Force capture of new flat frame")
-parser.add_argument("--flat_stack", type=int, default=5, help="Number of frames to average for flat")
+parser.add_argument("--flat_stack", type=int, default=3, help="Number of frames to average for flat")
 args = parser.parse_args()
 
 
@@ -220,7 +219,7 @@ MOTION_STATUS_VAR = "MV"
 # Address of the Pi camera server
 CAMERA_URL = "http://192.168.7.2:8000"
 
-# dimensions used for calibration
+# dimensions used for calibration; don't change these without taking new calibration measurements
 CALIBRATED_WIDTH = 2028
 CALIBRATED_HEIGHT = 1520
 
@@ -281,7 +280,7 @@ def run_scan():
         dark = get_or_create_calibration_scan(
             path=f"{CONFIG_DIR}/dark.npy",
             capture_fn=take_photo,
-            average_stack=5,
+            average_stack=args.dark_stack,
             force_new=args.new_dark,
             label="dark",
         )
@@ -292,7 +291,7 @@ def run_scan():
         flat = get_or_create_calibration_scan(
             path=f"{CONFIG_DIR}/flat.npy",
             capture_fn=take_photo,
-            average_stack=5,
+            average_stack=args.flat_stack,
             force_new=args.new_flat,
             label="flat",
         )
