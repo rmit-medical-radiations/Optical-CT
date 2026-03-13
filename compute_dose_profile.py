@@ -4,10 +4,8 @@ import cv2
 from os.path import expanduser
 from skimage.transform import iradon
 import shutil
-import numpy as np
 import matplotlib.pyplot as plt
 from pipeline_timer import PipelineTimer
-import nibabel as nib
 from pathlib import Path
 import argparse
 import pandas as pd
