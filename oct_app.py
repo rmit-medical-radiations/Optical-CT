@@ -474,6 +474,12 @@ class ResizableSquareItem(QGraphicsItem):
     def rect(self):
         return QRectF(self._rect)
 
+    def set_rect(self, rect: QRectF):
+        """Programmatically reposition/resize the crop square (from spinbox edits)."""
+        self._rect = self._constrain(rect, min_size=40.0)
+        self.prepareGeometryChange()
+        self.update()
+
     def setSceneRectConstraint(self, sr):
         self._scene_rect = QRectF(sr)
         self._rect = self._constrain(self._rect)
@@ -610,6 +616,14 @@ class SampleROIItem(QGraphicsItem):
         self._crop = QRectF(crop_rect)
         self._rect = self._constrain(self._locked_x(self._rect))
         self.prepareGeometryChange()
+
+    def set_rect_from_params(self, top_rel: int, height: int):
+        """Programmatically reposition from sample_top / sample_height spinbox values."""
+        new_top = self._crop.top() + top_rel
+        new_r   = QRectF(self._crop.left(), new_top, self._crop.width(), height)
+        self._rect = self._constrain(self._locked_x(new_r))
+        self.prepareGeometryChange()
+        self.update()
 
     def rect(self) -> QRectF:
         return QRectF(self._rect)
@@ -790,6 +804,25 @@ class PreviewWithROI(QWidget):
         self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
         self._crop_debounce.start(120)
         self._sample_debounce.start(120)
+
+    def set_crop_overlay(self, cx: int, top: int, extent: int):
+        """Called from spinbox edits — update the green square without re-emitting."""
+        if self.roi_item is None or self._img_w == 0:
+            return
+        x = cx - extent / 2
+        new_r = QRectF(x, top, extent, extent)
+        self.roi_item.set_rect(new_r)
+        # Keep sample rect locked to the new crop bounds
+        if self.sample_item:
+            self.sample_item.set_crop_rect(self.roi_item.rect())
+            self.scene.update()
+
+    def set_sample_overlay(self, top_rel: int, height: int):
+        """Called from spinbox edits — update the blue rectangle without re-emitting."""
+        if self.sample_item is None:
+            return
+        self.sample_item.set_rect_from_params(top_rel, height)
+        self.scene.update()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -1485,10 +1518,11 @@ class MainWindow(QMainWindow):
         # State
         self._scan_name: Optional[str]  = None
         self._scan_dir:  Optional[Path] = None
-        self._roi = (995, 270, 700)   # cx, top, extent defaults
+        self._roi = (995, 270, 700)
         self._thread: Optional[QThread]  = None
         self._worker = None
-        self._mode   = "idle"         # idle / scanning / reconstructing
+        self._mode   = "idle"
+        self._updating_overlays = False   # guard against spinbox↔overlay feedback loops
 
         # Camera
         self._sim = CameraSimulator()
@@ -1684,14 +1718,35 @@ class MainWindow(QMainWindow):
         self.export_btn.clicked.connect(lambda: ExportDialog(self).exec())
         self.phase_bar.phase_requested.connect(self._on_phase_requested)
 
+        # Spinbox → overlay (crop)
+        for spin in (self.crop_cx_spin, self.crop_top_spin, self.crop_extent_spin):
+            spin.valueChanged.connect(self._on_crop_spinbox_changed)
+
+        # Spinbox → overlay (sample)
+        for spin in (self.sample_top_spin, self.sample_h_spin):
+            spin.valueChanged.connect(self._on_sample_spinbox_changed)
+
+    def _on_crop_spinbox_changed(self):
+        if self._updating_overlays:
+            return
+        self.preview.set_crop_overlay(
+            self.crop_cx_spin.value(),
+            self.crop_top_spin.value(),
+            self.crop_extent_spin.value(),
+        )
+
+    def _on_sample_spinbox_changed(self):
+        if self._updating_overlays:
+            return
+        self.preview.set_sample_overlay(
+            self.sample_top_spin.value(),
+            self.sample_h_spin.value(),
+        )
+
     def _on_phase_requested(self, idx: int):
         """User clicked a phase button — tell the worker to proceed."""
         if self._worker and hasattr(self._worker, 'proceed'):
             self._worker.proceed()
-
-    def _on_sample_changed(self, top_rel: int, height: int):
-        self.sample_top_spin.setValue(top_rel)
-        self.sample_h_spin.setValue(height)
 
     # ── Preview update ────────────────────────────────────────────────────────
 
@@ -1707,12 +1762,17 @@ class MainWindow(QMainWindow):
         self.roi_label.setText(
             f"Green: crop  cx={cx}  top={top}  extent={extent} px  |  "
             f"Blue: sample top/height (within crop)")
-        # Drive the three crop spinboxes from the outer (green) ROI overlay.
+        self._updating_overlays = True
         self.crop_cx_spin.setValue(cx)
         self.crop_top_spin.setValue(top)
         self.crop_extent_spin.setValue(extent)
+        self._updating_overlays = False
 
-    # ── Scan ─────────────────────────────────────────────────────────────────
+    def _on_sample_changed(self, top_rel: int, height: int):
+        self._updating_overlays = True
+        self.sample_top_spin.setValue(top_rel)
+        self.sample_h_spin.setValue(height)
+        self._updating_overlays = False
 
     def _toggle_scan(self):
         if self._mode != "idle":
