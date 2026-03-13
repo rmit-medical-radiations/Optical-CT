@@ -61,27 +61,29 @@ def get_or_create_calibration_scan(
     print(f"Capturing new {label} scan...")
     image = capture_fn(average_stack)
 
-    # Save numpy
-    np.save(path, image)
+    if image is not None:
+        # Save numpy
+        np.save(path, image)
 
-    # Save PNG for visual inspection
-    png_img = image
+        # Save PNG for visual inspection
+        png_img = image
 
-    # Ensure dtype compatible with PNG
-    if png_img.dtype not in (np.uint8, np.uint16):
-        img = png_img.astype(np.float32)
-        lo, hi = np.percentile(img, (0.5, 99.5))
-        if hi > lo:
-            img = (img - lo) / (hi - lo)
-        img = np.clip(img, 0, 1)
-        png_img = (img * 65535).astype(np.uint16)
+        # Ensure dtype compatible with PNG
+        if png_img.dtype not in (np.uint8, np.uint16):
+            img = png_img.astype(np.float32)
+            lo, hi = np.percentile(img, (0.5, 99.5))
+            if hi > lo:
+                img = (img - lo) / (hi - lo)
+            img = np.clip(img, 0, 1)
+            png_img = (img * 65535).astype(np.uint16)
 
-    cv2.imwrite(png_path, png_img)
+        cv2.imwrite(png_path, png_img)
 
-    print(f"Saved new {label} scan to:")
-    print(f"  NPY: {path}")
-    print(f"  PNG: {png_path}")
-
+        print(f"Saved new {label} scan to:")
+        print(f"  NPY: {path}")
+        print(f"  PNG: {png_path}")
+    else:
+        print('could not capture an image.')
     return image
 
 def send(ser, cmd: str):
@@ -133,9 +135,6 @@ def take_photo(images_averaged=3):
 
         img_array = np.frombuffer(response.content, dtype=np.uint8)
         image = cv2.imdecode(img_array, cv2.IMREAD_GRAYSCALE)
-
-        if image is None:
-            raise ValueError("Failed to decode image")
 
         return image
 
@@ -284,6 +283,8 @@ def run_scan():
             force_new=args.new_dark,
             label="dark",
         )
+        if dark is None:
+            raise RuntimeError("Could not capture an image from the camera.")
 
         # flat - LED on, no sample
         wait_for_space_or_abort(msg='Capturing the flat calibration scan (LED on, no sample)')
@@ -295,6 +296,8 @@ def run_scan():
             force_new=args.new_flat,
             label="flat",
         )
+        if flat is None:
+            raise RuntimeError("Could not capture an image from the camera.")
 
         wait_for_space_or_abort(msg='Scanning the sample (LED on, with sample)')
 
@@ -331,6 +334,8 @@ def run_scan():
                 time.sleep(1.0)
 
                 img = take_photo(images_averaged=args.oct_stack)
+                if img is None:
+                    raise RuntimeError("Could not capture an image from the camera.")
 
                 h, w = img.shape[:2]
                 assert h == height and w == width
@@ -356,8 +361,9 @@ def run_scan():
             wait_until_stopped(ser, dn_char=DEVICE_NAME)
 
     except KeyboardInterrupt:
-        print("\nKeyboard interrupt detected. Stopping scan safely...")
-
+        print("\nKeyboard interrupt detected. Stopping scan...")
+    except RuntimeError as e:
+        print("Error:", e)
     finally:
         # turn lamp off
         set_lamp_off()
