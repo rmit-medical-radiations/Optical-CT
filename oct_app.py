@@ -575,11 +575,152 @@ class ResizableSquareItem(QGraphicsItem):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Inner sample ROI — vertically resizable rectangle, locked to crop square width
+# ──────────────────────────────────────────────────────────────────────────────
+
+class SampleROIItem(QGraphicsItem):
+    """
+    A semi-transparent blue rectangle that sits inside the crop square.
+    - Drag the body to move it vertically (X is ignored / locked to parent rect width)
+    - Drag the top or bottom edge to resize height
+    - Always constrained within the parent crop rect
+    _emit_changed() is monkey-patched from the outside (same pattern as ResizableSquareItem)
+    """
+    HANDLE_H = 8.0
+
+    def __init__(self, rect: QRectF, crop_rect: QRectF):
+        super().__init__()
+        self.setFlags(
+            QGraphicsItem.GraphicsItemFlag.ItemIsSelectable |
+            QGraphicsItem.GraphicsItemFlag.ItemIsFocusable
+        )
+        self._crop   = QRectF(crop_rect)
+        self._rect   = self._locked_x(rect)
+        self._drag   = None       # None / "move" / "top" / "bottom"
+        self._press_pos  = QPointF()
+        self._press_rect = QRectF()
+
+        self._pen          = QPen(QColor(ACCENT2), 1.5)
+        self._fill         = QBrush(QColor(0, 153, 255, 35))
+        self._handle_brush = QBrush(QColor(ACCENT2))
+        self._emit_changed = lambda: None
+        self.setAcceptHoverEvents(True)
+
+    def set_crop_rect(self, crop_rect: QRectF):
+        self._crop = QRectF(crop_rect)
+        self._rect = self._constrain(self._locked_x(self._rect))
+        self.prepareGeometryChange()
+
+    def rect(self) -> QRectF:
+        return QRectF(self._rect)
+
+    def _locked_x(self, r: QRectF) -> QRectF:
+        """Force X/width to match crop rect exactly."""
+        return QRectF(self._crop.left(), r.top(), self._crop.width(), r.height())
+
+    def _constrain(self, r: QRectF, min_h: float = 10.0) -> QRectF:
+        h = max(r.height(), min_h)
+        top = max(r.top(), self._crop.top())
+        top = min(top, self._crop.bottom() - h)
+        return QRectF(self._crop.left(), top, self._crop.width(), h)
+
+    def _top_handle(self) -> QRectF:
+        r = self._rect
+        return QRectF(r.left(), r.top() - self.HANDLE_H / 2,
+                      r.width(), self.HANDLE_H)
+
+    def _bot_handle(self) -> QRectF:
+        r = self._rect
+        return QRectF(r.left(), r.bottom() - self.HANDLE_H / 2,
+                      r.width(), self.HANDLE_H)
+
+    def boundingRect(self) -> QRectF:
+        pad = self.HANDLE_H + 2
+        r = QRectF(self._rect)
+        r.adjust(0, -pad, 0, pad)
+        return r
+
+    def paint(self, painter, option, widget=None):
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(self._pen)
+        painter.setBrush(self._fill)
+        painter.drawRect(self._rect)
+
+        # top / bottom edge handles as full-width bars
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._handle_brush)
+        h = self.HANDLE_H / 2
+        r = self._rect
+        painter.drawRect(QRectF(r.left(), r.top() - h/2,    r.width(), h))
+        painter.drawRect(QRectF(r.left(), r.bottom() - h/2, r.width(), h))
+
+        # label
+        painter.setPen(QPen(QColor(ACCENT2)))
+        painter.setFont(QFont("Courier New", 8))
+        painter.drawText(
+            QRectF(r.left() + 4, r.top() + 2, r.width(), 14),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+            "sample ROI"
+        )
+
+    def hoverMoveEvent(self, event):
+        p = event.pos()
+        if self._top_handle().contains(p) or self._bot_handle().contains(p):
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+        elif self._rect.contains(p):
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().hoverMoveEvent(event)
+
+    def mousePressEvent(self, event):
+        p = event.pos()
+        self._press_pos  = p
+        self._press_rect = QRectF(self._rect)
+        if self._top_handle().contains(p):
+            self._drag = "top"
+        elif self._bot_handle().contains(p):
+            self._drag = "bottom"
+        elif self._rect.contains(p):
+            self._drag = "move"
+        else:
+            self._drag = None
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if not self._drag:
+            return super().mouseMoveEvent(event)
+        dy   = event.pos().y() - self._press_pos.y()
+        r0   = self._press_rect
+
+        if self._drag == "move":
+            new_r = QRectF(r0.left(), r0.top() + dy, r0.width(), r0.height())
+        elif self._drag == "top":
+            new_top = r0.top() + dy
+            new_h   = r0.height() - dy
+            new_r   = QRectF(r0.left(), new_top, r0.width(), max(new_h, 10))
+        else:  # bottom
+            new_h = max(r0.height() + dy, 10)
+            new_r = QRectF(r0.left(), r0.top(), r0.width(), new_h)
+
+        self._rect = self._constrain(self._locked_x(new_r))
+        self.prepareGeometryChange()
+        self.update()
+        self._emit_changed()
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag = None
+        event.accept()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Preview widget
 # ──────────────────────────────────────────────────────────────────────────────
 
 class PreviewWithROI(QWidget):
-    roiChanged = pyqtSignal(int, int, int)   # centre_x, top_y, extent (pixels)
+    roiChanged    = pyqtSignal(int, int, int)        # crop: cx, top, extent (image px)
+    sampleChanged = pyqtSignal(int, int)             # sample: top_px, height_px (within crop)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -597,13 +738,15 @@ class PreviewWithROI(QWidget):
         layout.setContentsMargins(0,0,0,0)
         layout.addWidget(self.view)
 
-        self.pix_item: Optional[QGraphicsPixmapItem] = None
-        self.roi_item: Optional[ResizableSquareItem] = None
+        self.pix_item:    Optional[QGraphicsPixmapItem] = None
+        self.roi_item:    Optional[ResizableSquareItem] = None
+        self.sample_item: Optional[SampleROIItem]       = None
         self._img_w = self._img_h = 0
 
-        self._debounce = QTimer(self)
-        self._debounce.setSingleShot(True)
-        self._debounce.timeout.connect(self._emit_roi)
+        self._crop_debounce   = QTimer(self); self._crop_debounce.setSingleShot(True)
+        self._crop_debounce.timeout.connect(self._emit_roi)
+        self._sample_debounce = QTimer(self); self._sample_debounce.setSingleShot(True)
+        self._sample_debounce.timeout.connect(self._emit_sample)
 
     def set_frame(self, gray: np.ndarray):
         qimg = np_gray_to_qimage(gray)
@@ -619,6 +762,7 @@ class PreviewWithROI(QWidget):
         self.scene.setSceneRect(QRectF(0, 0, self._img_w, self._img_h))
 
         if self.roi_item is None:
+            # Crop square — default to 55% of smaller dimension, centred
             size = min(self._img_w, self._img_h) * 0.55
             x    = (self._img_w - size) / 2
             y    = (self._img_h - size) / 2
@@ -626,12 +770,26 @@ class PreviewWithROI(QWidget):
                                                 self.scene.sceneRect())
             self.roi_item.setZValue(10)
             self.scene.addItem(self.roi_item)
-            self.roi_item._emit_changed = lambda: self._debounce.start(120)
+            self.roi_item._emit_changed = lambda: self._crop_debounce.start(120)
+
+            # Sample ROI — default to middle 60% of the crop square height
+            crop_r = self.roi_item.rect()
+            s_top  = crop_r.top()  + crop_r.height() * 0.20
+            s_h    = crop_r.height() * 0.60
+            self.sample_item = SampleROIItem(
+                QRectF(crop_r.left(), s_top, crop_r.width(), s_h),
+                crop_r)
+            self.sample_item.setZValue(20)
+            self.scene.addItem(self.sample_item)
+            self.sample_item._emit_changed = lambda: self._sample_debounce.start(120)
         else:
             self.roi_item.setSceneRectConstraint(self.scene.sceneRect())
+            # Keep sample ROI locked to crop rect
+            self.sample_item.set_crop_rect(self.roi_item.rect())
 
         self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-        self._debounce.start(120)
+        self._crop_debounce.start(120)
+        self._sample_debounce.start(120)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -641,11 +799,28 @@ class PreviewWithROI(QWidget):
     def _emit_roi(self):
         if self.roi_item is None or self._img_w == 0:
             return
+        # roi_item.rect() is already in scene coords = raw image pixels,
+        # because scene rect is set to (0, 0, img_w, img_h).
+        # The view scaling is purely cosmetic and doesn't affect scene coords.
         r    = self.roi_item.rect()
-        cx   = int(r.center().x())
-        top  = int(r.top())
-        size = int(r.width())
+        cx   = int(round(r.center().x()))
+        top  = int(round(r.top()))
+        size = int(round(r.width()))   # square, so width == height == extent
+        # Keep sample ROI locked to new crop bounds
+        if self.sample_item:
+            self.sample_item.set_crop_rect(r)
+            self._sample_debounce.start(120)
         self.roiChanged.emit(cx, top, size)
+
+    def _emit_sample(self):
+        if self.sample_item is None or self.roi_item is None:
+            return
+        crop_r  = self.roi_item.rect()
+        samp_r  = self.sample_item.rect()
+        # sample_top is relative to the top of the crop window (in image pixels)
+        top_rel = int(round(samp_r.top()  - crop_r.top()))
+        height  = int(round(samp_r.height()))
+        self.sampleChanged.emit(top_rel, height)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1403,11 +1578,18 @@ class MainWindow(QMainWindow):
         self.scan_progress = QProgressBar()
         ctrl_grid.addWidget(self.scan_progress, 6, 1, 1, 2)
 
-        # Start/stop button
+        # Start / Cancel row
+        btn_row = QHBoxLayout()
         self.start_stop_btn = QPushButton("▶  START SCAN")
         self.start_stop_btn.setObjectName("start_btn")
         self.start_stop_btn.setMinimumHeight(42)
-        ctrl_grid.addWidget(self.start_stop_btn, 7, 0, 1, 3)
+        self.cancel_scan_btn = QPushButton("✕  CANCEL")
+        self.cancel_scan_btn.setObjectName("stop_btn")
+        self.cancel_scan_btn.setMinimumHeight(42)
+        self.cancel_scan_btn.setEnabled(False)
+        btn_row.addWidget(self.start_stop_btn, 3)
+        btn_row.addWidget(self.cancel_scan_btn, 1)
+        ctrl_grid.addLayout(btn_row, 7, 0, 1, 3)
 
         left.addWidget(ctrl_box, 2)
         root.addLayout(left, 5)
@@ -1454,10 +1636,17 @@ class MainWindow(QMainWindow):
         self.recon_progress = QProgressBar()
         rg.addWidget(self.recon_progress, 6, 1)
 
+        recon_btn_row = QHBoxLayout()
         self.recon_btn = QPushButton("▶  RUN RECONSTRUCTION")
         self.recon_btn.setObjectName("start_btn")
         self.recon_btn.setMinimumHeight(36)
-        rg.addWidget(self.recon_btn, 7, 0, 1, 2)
+        self.cancel_recon_btn = QPushButton("✕  CANCEL")
+        self.cancel_recon_btn.setObjectName("stop_btn")
+        self.cancel_recon_btn.setMinimumHeight(36)
+        self.cancel_recon_btn.setEnabled(False)
+        recon_btn_row.addWidget(self.recon_btn, 3)
+        recon_btn_row.addWidget(self.cancel_recon_btn, 1)
+        rg.addLayout(recon_btn_row, 7, 0, 1, 2)
 
         right.addWidget(recon_box)
 
@@ -1487,8 +1676,11 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self):
         self.preview.roiChanged.connect(self._on_roi_changed)
+        self.preview.sampleChanged.connect(self._on_sample_changed)
         self.start_stop_btn.clicked.connect(self._toggle_scan)
+        self.cancel_scan_btn.clicked.connect(self._cancel_scan)
         self.recon_btn.clicked.connect(self._start_reconstruction)
+        self.cancel_recon_btn.clicked.connect(self._cancel_recon)
         self.export_btn.clicked.connect(lambda: ExportDialog(self).exec())
         self.phase_bar.phase_requested.connect(self._on_phase_requested)
 
@@ -1496,6 +1688,10 @@ class MainWindow(QMainWindow):
         """User clicked a phase button — tell the worker to proceed."""
         if self._worker and hasattr(self._worker, 'proceed'):
             self._worker.proceed()
+
+    def _on_sample_changed(self, top_rel: int, height: int):
+        self.sample_top_spin.setValue(top_rel)
+        self.sample_h_spin.setValue(height)
 
     # ── Preview update ────────────────────────────────────────────────────────
 
@@ -1508,14 +1704,19 @@ class MainWindow(QMainWindow):
 
     def _on_roi_changed(self, cx: int, top: int, extent: int):
         self._roi = (cx, top, extent)
-        self.roi_label.setText(f"ROI: cx={cx}  top={top}  extent={extent}")
+        self.roi_label.setText(
+            f"Green: crop  cx={cx}  top={top}  extent={extent} px  |  "
+            f"Blue: sample top/height (within crop)")
+        # Drive the three crop spinboxes from the outer (green) ROI overlay.
+        self.crop_cx_spin.setValue(cx)
+        self.crop_top_spin.setValue(top)
+        self.crop_extent_spin.setValue(extent)
 
     # ── Scan ─────────────────────────────────────────────────────────────────
 
     def _toggle_scan(self):
         if self._mode != "idle":
-            self._abort_worker()
-            return
+            return  # shouldn't happen; button is disabled while scanning
 
         name = self.scan_name_edit.text().strip() or time.strftime("scan_%Y%m%d_%H%M%S")
         self._scan_name = name
@@ -1555,11 +1756,17 @@ class MainWindow(QMainWindow):
         self._mode = "scanning"
         self.scan_progress.setValue(0)
         self.phase_bar.reset()
-        self.start_stop_btn.setText("■  STOP")
-        self.start_stop_btn.setObjectName("stop_btn")
-        self.start_stop_btn.setStyle(self.start_stop_btn.style())
+        self.start_stop_btn.setText("▶  START SCAN")
+        self.start_stop_btn.setEnabled(False)
+        self.cancel_scan_btn.setEnabled(True)
         self.recon_btn.setEnabled(False)
         self._log(f"Starting scan: {name}")
+
+    def _cancel_scan(self):
+        self._log("Cancelling scan…")
+        if self._worker and hasattr(self._worker, 'abort'):
+            self._worker.abort()
+        self.cancel_scan_btn.setEnabled(False)
 
     def _on_phase_ready(self, idx: int):
         """Worker is waiting — enable that phase's button."""
@@ -1575,14 +1782,13 @@ class MainWindow(QMainWindow):
 
     def _scan_finished(self, ok: bool, msg: str):
         self._mode = "idle"
-        self.start_stop_btn.setText("▶  START SCAN")
-        self.start_stop_btn.setObjectName("start_btn")
-        self.start_stop_btn.setStyle(self.start_stop_btn.style())
+        self.start_stop_btn.setEnabled(True)
+        self.cancel_scan_btn.setEnabled(False)
         self.recon_btn.setEnabled(True)
         if not ok:
             self.phase_bar.reset()
         self._log(f"{'✓' if ok else '✗'} {msg}")
-        if not ok:
+        if not ok and "abort" not in msg.lower() and "cancel" not in msg.lower():
             QMessageBox.critical(self, "Scan error", msg)
 
     # ── Reconstruction ────────────────────────────────────────────────────────
@@ -1635,23 +1841,24 @@ class MainWindow(QMainWindow):
         self._mode = "reconstructing"
         self.recon_progress.setValue(0)
         self.recon_btn.setEnabled(False)
+        self.cancel_recon_btn.setEnabled(True)
         self.start_stop_btn.setEnabled(False)
         self._log(f"Reconstructing: {scan_dir.name}")
+
+    def _cancel_recon(self):
+        self._log("Cancelling reconstruction…")
+        if self._worker and hasattr(self._worker, 'abort'):
+            self._worker.abort()
+        self.cancel_recon_btn.setEnabled(False)
 
     def _recon_finished(self, ok: bool, msg: str):
         self._mode = "idle"
         self.recon_btn.setEnabled(True)
+        self.cancel_recon_btn.setEnabled(False)
         self.start_stop_btn.setEnabled(True)
         self._log(f"{'✓' if ok else '✗'} {msg}")
-        if not ok:
+        if not ok and "abort" not in msg.lower() and "cancel" not in msg.lower():
             QMessageBox.critical(self, "Reconstruction error", msg)
-
-    # ── Abort ─────────────────────────────────────────────────────────────────
-
-    def _abort_worker(self):
-        if self._worker and hasattr(self._worker, 'abort'):
-            self._worker.abort()
-        self._log("Abort requested…")
 
     # ── Log ───────────────────────────────────────────────────────────────────
 
@@ -1662,7 +1869,8 @@ class MainWindow(QMainWindow):
         sb.setValue(sb.maximum())
 
     def closeEvent(self, e):
-        self._abort_worker()
+        if self._worker and hasattr(self._worker, 'abort'):
+            self._worker.abort()
         lamp_off()
         super().closeEvent(e)
 
