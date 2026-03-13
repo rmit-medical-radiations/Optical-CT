@@ -1,0 +1,18 @@
+[Unit]
+Description=Camera Server Service
+After=network.target multi-user.target
+
+[Service]
+Type=idle
+User=pi
+Group=pi
+WorkingDirectory=/home/pi
+
+ExecStartPre=/bin/sleep 8
+ExecStart=/usr/bin/python3 /home/pi/repos/Optical-CT/camera_server.py
+
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
