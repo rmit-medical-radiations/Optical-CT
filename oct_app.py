@@ -1558,13 +1558,6 @@ class MainWindow(QMainWindow):
         pl.addWidget(self.roi_label)
         left.addWidget(preview_box, 3)
 
-        # Phase buttons — user clicks through dark → flat → scan
-        phase_box = QGroupBox("Scan phases")
-        pb_layout = QVBoxLayout(phase_box)
-        self.phase_bar = PhaseButtonBar()
-        pb_layout.addWidget(self.phase_bar)
-        left.addWidget(phase_box)
-
         # Scan controls
         ctrl_box = QGroupBox("Scan controls")
         ctrl_grid = QGridLayout(ctrl_box)
@@ -1624,6 +1617,25 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.start_stop_btn, 3)
         btn_row.addWidget(self.cancel_scan_btn, 1)
         ctrl_grid.addLayout(btn_row, 7, 0, 1, 3)
+
+        # Phase buttons — sub-steps that unlock once START SCAN is clicked
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        ctrl_grid.addWidget(sep, 8, 0, 1, 3)
+
+        steps_lbl = QLabel("Scan steps:")
+        steps_lbl.setObjectName("dim")
+        ctrl_grid.addWidget(steps_lbl, 9, 0, 1, 3)
+
+        self.phase_bar = PhaseButtonBar()
+        phase_container = QWidget()
+        phase_container.setContentsMargins(16, 0, 0, 0)
+        pc_layout = QVBoxLayout(phase_container)
+        pc_layout.setContentsMargins(16, 0, 0, 0)
+        pc_layout.setSpacing(0)
+        pc_layout.addWidget(self.phase_bar)
+        ctrl_grid.addWidget(phase_container, 10, 0, 1, 3)
 
         left.addWidget(ctrl_box, 2)
         root.addLayout(left, 5)
