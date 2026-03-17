@@ -251,7 +251,7 @@ QTextEdit {{
 # ──────────────────────────────────────────────────────────────────────────────
 
 class CameraSimulator:
-    def __init__(self, w=1280, h=720):
+    def __init__(self, w=2028, h=1520):
         self.w, self.h = w, h
         self.t0 = time.time()
 
@@ -467,6 +467,7 @@ class ResizableSquareItem(QGraphicsItem):
         self._drag_mode  = None
         self._press_pos  = QPointF()
         self._press_rect = QRectF()
+        self._fixed_cx: Optional[float] = None   # when set, X-centre is locked
         self._pen          = QPen(QColor(ACCENT), 2)
         self._handle_brush = QBrush(QColor(ACCENT))
         self._fill_brush   = QBrush(QColor(0, 212, 170, 30))
@@ -539,6 +540,13 @@ class ResizableSquareItem(QGraphicsItem):
         self._drag_mode = h if h else ("move" if self._rect.contains(event.pos()) else None)
         event.accept()
 
+    def _apply_fixed_cx(self, r: QRectF) -> QRectF:
+        """Re-centre rect at _fixed_cx if the X axis is locked."""
+        if self._fixed_cx is not None:
+            r = QRectF(r)
+            r.moveLeft(self._fixed_cx - r.width() / 2)
+        return r
+
     def mouseMoveEvent(self, event):
         if not self._drag_mode:
             return super().mouseMoveEvent(event)
@@ -546,7 +554,7 @@ class ResizableSquareItem(QGraphicsItem):
         r0 = self._press_rect
         if self._drag_mode == "move":
             r = QRectF(r0); r.translate(delta)
-            self._rect = self._constrain(r)
+            self._rect = self._apply_fixed_cx(self._constrain(r))
         else:
             corners = {
                 "resize_tl": (QPointF(r0.right(), r0.bottom()), QPointF(r0.left()+delta.x(), r0.top()+delta.y())),
@@ -555,7 +563,7 @@ class ResizableSquareItem(QGraphicsItem):
                 "resize_br": (QPointF(r0.left(),  r0.top()),    QPointF(r0.right()+delta.x(), r0.bottom()+delta.y())),
             }
             anchor, corner = corners[self._drag_mode]
-            self._rect = self._constrain(self._sq(anchor, corner), min_size=40)
+            self._rect = self._apply_fixed_cx(self._constrain(self._sq(anchor, corner), min_size=40))
         self.prepareGeometryChange()
         self.update()
         self._emit_changed()
@@ -812,6 +820,7 @@ class PreviewWithROI(QWidget):
                 y    = (self._img_h - size) / 2
             self.roi_item = ResizableSquareItem(QRectF(x, y, size, size),
                                                 self.scene.sceneRect())
+            self.roi_item._fixed_cx = x + size / 2   # lock to axis of rotation
             self.roi_item.setZValue(10)
             self.scene.addItem(self.roi_item)
             self.roi_item._emit_changed = lambda: self._crop_debounce.start(120)
@@ -830,6 +839,9 @@ class PreviewWithROI(QWidget):
             self.sample_item.setZValue(20)
             self.scene.addItem(self.sample_item)
             self.sample_item._emit_changed = lambda: self._sample_debounce.start(120)
+            # Fire once to sync spinboxes with the initial ROI positions
+            self._crop_debounce.start(120)
+            self._sample_debounce.start(120)
         else:
             # Only re-constrain when the image dimensions actually change; calling
             # setSceneRectConstraint on every frame would shift the ROI away from
@@ -837,12 +849,12 @@ class PreviewWithROI(QWidget):
             new_sr = self.scene.sceneRect()
             if new_sr != self.roi_item._scene_rect:
                 self.roi_item.setSceneRectConstraint(new_sr)
+                self._crop_debounce.start(120)
+                self._sample_debounce.start(120)
             # Always keep sample ROI locked to current crop rect
             self.sample_item.set_crop_rect(self.roi_item.rect())
 
         self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-        self._crop_debounce.start(120)
-        self._sample_debounce.start(120)
 
     def _update_axis_line(self, cx: float):
         """Draw/move the dotted vertical axis-of-rotation line at x=cx."""
@@ -862,6 +874,7 @@ class PreviewWithROI(QWidget):
             return
         x = cx - extent / 2
         new_r = QRectF(x, top, extent, extent)
+        self.roi_item._fixed_cx = float(cx)
         self.roi_item.set_rect(new_r)
         # Keep sample rect locked to the new crop bounds
         if self.sample_item:
@@ -1686,7 +1699,7 @@ class MainWindow(QMainWindow):
         pl = QVBoxLayout(preview_box)
         self.preview = PreviewWithROI()
         self.preview.set_default_roi(cx=995, top=270, extent=700,
-                                     sample_top=1, sample_h=450)
+                                     sample_top=0, sample_h=450)
         self.preview.setMinimumHeight(200)
         pl.addWidget(self.preview, 1)
         self.roi_label = QLabel("ROI: cx=995  top=270  extent=700")
@@ -1803,7 +1816,7 @@ class MainWindow(QMainWindow):
 
         rg.addWidget(QLabel("Sample top (px):"), 3, 0)
         self.sample_top_spin = QSpinBox()
-        self.sample_top_spin.setRange(0, 9999); self.sample_top_spin.setValue(1)
+        self.sample_top_spin.setRange(0, 9999); self.sample_top_spin.setValue(0)
         rg.addWidget(self.sample_top_spin, 3, 1)
 
         rg.addWidget(QLabel("Sample height (px):"), 4, 0)
