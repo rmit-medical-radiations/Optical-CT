@@ -1191,7 +1191,7 @@ class ScanWorker(QObject):
             img = cv2.remap(img, map1, map2,
                             interpolation=cv2.INTER_LINEAR,
                             borderMode=cv2.BORDER_CONSTANT)
-        fname = image_dir / f"img_{i:04d}_{angle:06.2f}deg.png"
+        fname = image_dir / f"img_{i:04d}_{int(angle):03d}_deg.png"
         cv2.imwrite(str(fname), img)
 
     def _run_rotation(self, num_positions, degree_increment, oct_stack,
