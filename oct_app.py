@@ -3,10 +3,18 @@
 Optical CT Scan UI — integrated with scan_sample.py and compute_dose_profile.py logic.
 
 Phases:
-  1. Dark capture  (lamp off, no sample)
-  2. Flat capture  (lamp on, no sample)
-  3. Sample scan   (lamp on, sample rotating)
-  4. Reconstruction + dose profiling (inline FBP)
+  1. Dark capture           (lamp off, no sample)
+  2. Flat capture           (lamp on, no sample)
+  3. Pre-irradiation scan   (lamp on, sample rotating)
+  4. Wait for irradiation   (user removes sample, irradiates, replaces)
+  5. Post-irradiation scan  (lamp on, sample rotating)
+  6. Subtraction            (post − pre, auto-computed, saved to subtracted/)
+  7. Reconstruction + dose profiling (inline FBP on subtracted images)
+
+Image directories under each scan folder:
+  pre/         — raw projections before irradiation
+  post/        — raw projections after irradiation
+  subtracted/  — (post − pre).clip(0) projections used for reconstruction
 
 Hardware is driven from QThread workers; the main thread only updates the UI.
 Camera preview uses the real Pi camera HTTP endpoint; falls back to simulator.
@@ -900,17 +908,26 @@ class DoseDepthPlot(QWidget):
 
 class PhaseButtonBar(QWidget):
     """
-    Three buttons the user must click through: Dark → Flat → Scan.
+    Five buttons the user must click through:
+      Dark → Flat → Pre-scan → (irradiate) → Post-scan.
     Only the current phase button is enabled. Each click triggers the
     corresponding phase in the scan worker.
     """
-    phase_requested = pyqtSignal(int)   # 0=dark, 1=flat, 2=scan
+    phase_requested = pyqtSignal(int)   # 0=dark, 1=flat, 2=pre, 3=wait, 4=post
 
-    LABELS = ["① Capture dark", "② Capture flat", "③ Start scan"]
+    LABELS = [
+        "① Capture dark",
+        "② Capture flat",
+        "③ Pre-irradiation scan",
+        "④ Ready for post-irradiation scan",
+        "⑤ Post-irradiation scan",
+    ]
     HINTS  = [
         "Turn lamp OFF and remove sample, then click",
         "Turn lamp ON with no sample, then click",
-        "Place sample, lamp ON — click to begin rotation",
+        "Place sample, lamp ON — click to begin pre-irradiation rotation",
+        "Remove sample, irradiate, replace sample — click when ready",
+        "Sample replaced, lamp ON — click to begin post-irradiation rotation",
     ]
 
     def __init__(self, parent=None):
@@ -1042,10 +1059,12 @@ class ScanWorker(QObject):
         return not self._abort
 
     def run(self):
-        cfg       = self.cfg
-        image_dir = Path(cfg["image_dir"])
-        dark_path = str(CONFIG_DIR / "dark.npy")
-        flat_path = str(CONFIG_DIR / "flat.npy")
+        cfg            = self.cfg
+        pre_dir        = Path(cfg["pre_dir"])
+        post_dir       = Path(cfg["post_dir"])
+        subtracted_dir = Path(cfg["subtracted_dir"])
+        dark_path      = str(CONFIG_DIR / "dark.npy")
+        flat_path      = str(CONFIG_DIR / "flat.npy")
 
         degree_increment = cfg["degree_increment"]
         oct_stack        = cfg["oct_stack"]
@@ -1119,19 +1138,94 @@ class ScanWorker(QObject):
             if self._abort:
                 self.finished.emit(False, "Aborted"); return
 
-            # ── Phase 2: Scan ─────────────────────────────────────────────────
-            self.log.emit("Waiting: place sample, lamp ON — then click ③ Start scan")
+            num_positions = int(360 / degree_increment)
+
+            # ── Phase 2: Pre-irradiation scan ─────────────────────────────────
+            self.log.emit("Waiting: place sample, lamp ON — click ③ to begin pre-irradiation scan")
             if not self._wait_for_user(2):
                 self.finished.emit(False, "Aborted"); return
 
             self.phase_running.emit(2)
-            self.log.emit("Scanning sample…")
+            self.log.emit("Pre-irradiation scan…")
             lamp_on()
+            ok = self._run_rotation(num_positions, degree_increment, oct_stack,
+                                    pre_dir, map1, map2, use_real_serial,
+                                    progress_offset=0, progress_scale=0.5)
+            if not ok:
+                return
+            self.phase_done.emit(2)
+            if self._abort:
+                self.finished.emit(False, "Scan aborted by user"); return
 
-            num_positions = int(360 / degree_increment)
+            # ── Phase 3: Wait for irradiation ─────────────────────────────────
+            lamp_off()
+            self.log.emit("Remove sample, irradiate, replace — then click ④")
+            if not self._wait_for_user(3):
+                self.finished.emit(False, "Aborted"); return
+            self.phase_done.emit(3)
+            if self._abort:
+                self.finished.emit(False, "Aborted"); return
 
-            if use_real_serial:
-                import serial
+            # ── Phase 4: Post-irradiation scan ────────────────────────────────
+            self.log.emit("Waiting: lamp ON — click ⑤ to begin post-irradiation scan")
+            if not self._wait_for_user(4):
+                self.finished.emit(False, "Aborted"); return
+
+            self.phase_running.emit(4)
+            self.log.emit("Post-irradiation scan…")
+            lamp_on()
+            ok = self._run_rotation(num_positions, degree_increment, oct_stack,
+                                    post_dir, map1, map2, use_real_serial,
+                                    progress_offset=0.5, progress_scale=0.5)
+            if not ok:
+                return
+            self.phase_done.emit(4)
+            lamp_off()
+
+            if self._abort:
+                self.finished.emit(False, "Scan aborted by user"); return
+
+            # ── Subtraction: post − pre ────────────────────────────────────────
+            self.log.emit("Computing subtracted images (post − pre)…")
+            self._compute_subtracted(pre_dir, post_dir, subtracted_dir, map1, map2)
+            self.log.emit(f"✓ Subtracted images saved to {subtracted_dir}")
+
+            self.finished.emit(True, "Scan complete")
+
+        except Exception as e:
+            lamp_off()
+            self.finished.emit(False, f"Scan error: {e}\n{traceback.format_exc()}")
+
+    def _save_image(self, img, i, angle, image_dir, map1, map2):
+        if map1 is not None:
+            img = cv2.remap(img, map1, map2,
+                            interpolation=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_CONSTANT)
+        fname = image_dir / f"img_{i:04d}_{angle:06.2f}deg.png"
+        cv2.imwrite(str(fname), img)
+
+    def _run_rotation(self, num_positions, degree_increment, oct_stack,
+                      image_dir, map1, map2, use_real_serial,
+                      progress_offset=0.0, progress_scale=1.0):
+        """Execute one full rotation scan, saving images to image_dir.
+        Returns True on success, False (and emits finished) on error/abort.
+        progress_offset and progress_scale map [0,100] → overall scan_progress range.
+        """
+        sim = CameraSimulator()
+
+        def capture(stack):
+            if self.cfg["use_real_camera"]:
+                img = take_photo_http(stack)
+                if img is None:
+                    self.log.emit("⚠ Camera HTTP failed — using simulator")
+                    img = sim.get_frame(stack)
+            else:
+                img = sim.get_frame(stack)
+            return img
+
+        if use_real_serial:
+            import serial
+            try:
                 with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=SERIAL_TIMEOUT) as ser:
                     time.sleep(0.5)
                     for cmd in [f"EE=0", f"DN={DEVICE_NAME}", f"MS={MICROSTEPS}",
@@ -1152,46 +1246,50 @@ class ScanWorker(QObject):
                         time.sleep(0.8)
                         img = capture(oct_stack)
                         if img is None:
-                            self.finished.emit(False, f"Camera failed at step {i}"); return
+                            self.finished.emit(False, f"Camera failed at step {i}")
+                            return False
                         self._save_image(img, i, angle, image_dir, map1, map2)
                         self.image_ready.emit(img.copy())
-                        self.scan_progress.emit(int(100 * (i+1) / num_positions))
+                        pct = int((progress_offset + progress_scale * (i+1) / num_positions) * 100)
+                        self.scan_progress.emit(pct)
 
-                    lamp_off()
                     serial_send(ser, "MA 0")
                     serial_wait_stopped(ser, dn_char=DEVICE_NAME)
-            else:
-                for i in range(num_positions):
-                    if self._abort:
-                        break
-                    angle = i * degree_increment
-                    time.sleep(0.05)
-                    img = capture(oct_stack)
-                    if img is None:
-                        continue
-                    self._save_image(img, i, angle, image_dir, map1, map2)
-                    self.image_ready.emit(img.copy())
-                    self.scan_progress.emit(int(100 * (i+1) / num_positions))
-                lamp_off()
+            except Exception as e:
+                self.finished.emit(False, f"Serial error: {e}\n{traceback.format_exc()}")
+                return False
+        else:
+            for i in range(num_positions):
+                if self._abort:
+                    break
+                angle = i * degree_increment
+                time.sleep(0.05)
+                img = capture(oct_stack)
+                if img is None:
+                    continue
+                self._save_image(img, i, angle, image_dir, map1, map2)
+                self.image_ready.emit(img.copy())
+                pct = int((progress_offset + progress_scale * (i+1) / num_positions) * 100)
+                self.scan_progress.emit(pct)
 
-            self.phase_done.emit(2)
+        return True
 
-            if self._abort:
-                self.finished.emit(False, "Scan aborted by user")
-            else:
-                self.finished.emit(True, "Scan complete")
-
-        except Exception as e:
-            lamp_off()
-            self.finished.emit(False, f"Scan error: {e}\n{traceback.format_exc()}")
-
-    def _save_image(self, img, i, angle, image_dir, map1, map2):
-        if map1 is not None:
-            img = cv2.remap(img, map1, map2,
-                            interpolation=cv2.INTER_LINEAR,
-                            borderMode=cv2.BORDER_CONSTANT)
-        fname = image_dir / f"img_{i:02d}_{angle:03d}deg.png"
-        cv2.imwrite(str(fname), img)
+    def _compute_subtracted(self, pre_dir: Path, post_dir: Path, subtracted_dir: Path,
+                             map1, map2):
+        """Compute subtracted = (post − pre).clip(0) and save as uint16 PNG."""
+        pre_files  = sorted(pre_dir.glob("*.png"))
+        post_files = sorted(post_dir.glob("*.png"))
+        if len(pre_files) != len(post_files):
+            self.log.emit(f"⚠ pre/post image count mismatch "
+                          f"({len(pre_files)} vs {len(post_files)}) — "
+                          f"using first {min(len(pre_files), len(post_files))} pairs")
+        n = min(len(pre_files), len(post_files))
+        for i, (pf, qf) in enumerate(zip(pre_files[:n], post_files[:n])):
+            pre_img  = cv2.imread(str(pf),  cv2.IMREAD_GRAYSCALE).astype(np.float32)
+            post_img = cv2.imread(str(qf), cv2.IMREAD_GRAYSCALE).astype(np.float32)
+            diff = np.clip(post_img - pre_img, 0, 65535).astype(np.uint16)
+            out_path = subtracted_dir / pf.name
+            cv2.imwrite(str(out_path), diff)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1793,14 +1891,19 @@ class MainWindow(QMainWindow):
         name = self.scan_name_edit.text().strip() or time.strftime("scan_%Y%m%d_%H%M%S")
         self._scan_name = name
         self._scan_dir  = SCANS_DIR / name
-        image_dir       = self._scan_dir / "images"
-        if image_dir.exists():
-            shutil.rmtree(image_dir)
-        image_dir.mkdir(parents=True)
+        pre_dir        = self._scan_dir / "pre"
+        post_dir       = self._scan_dir / "post"
+        subtracted_dir = self._scan_dir / "subtracted"
+        for d in (pre_dir, post_dir, subtracted_dir):
+            if d.exists():
+                shutil.rmtree(d)
+            d.mkdir(parents=True)
 
         cfg = dict(
             scan_name      = name,
-            image_dir      = str(image_dir),
+            pre_dir        = str(pre_dir),
+            post_dir       = str(post_dir),
+            subtracted_dir = str(subtracted_dir),
             degree_increment = self.step_spin.value(),
             oct_stack      = self.oct_stack_spin.value(),
             dark_stack     = self.calib_stack_spin.value(),
@@ -1885,7 +1988,7 @@ class MainWindow(QMainWindow):
         depth_dose_dir = str(scan_dir / "depth-dose")
 
         cfg = dict(
-            image_dir      = str(scan_dir / "images"),
+            image_dir      = str(scan_dir / "subtracted"),
             reconstruct_dir = recon_dir,
             dose_dir       = dose_dir,
             depth_dose_dir = depth_dose_dir,
