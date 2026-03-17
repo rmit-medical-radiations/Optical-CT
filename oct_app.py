@@ -831,8 +831,13 @@ class PreviewWithROI(QWidget):
             self.scene.addItem(self.sample_item)
             self.sample_item._emit_changed = lambda: self._sample_debounce.start(120)
         else:
-            self.roi_item.setSceneRectConstraint(self.scene.sceneRect())
-            # Keep sample ROI locked to crop rect
+            # Only re-constrain when the image dimensions actually change; calling
+            # setSceneRectConstraint on every frame would shift the ROI away from
+            # the desired default position on smaller images (e.g. the simulator).
+            new_sr = self.scene.sceneRect()
+            if new_sr != self.roi_item._scene_rect:
+                self.roi_item.setSceneRectConstraint(new_sr)
+            # Always keep sample ROI locked to current crop rect
             self.sample_item.set_crop_rect(self.roi_item.rect())
 
         self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
