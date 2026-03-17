@@ -49,7 +49,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QLabel, QSpinBox, QProgressBar, QGroupBox, QFileDialog,
-    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsItem,
+    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsItem, QGraphicsLineItem,
     QDialog, QListWidget, QListWidgetItem, QComboBox, QMessageBox, QFormLayout,
     QLineEdit, QCheckBox, QTabWidget, QDoubleSpinBox, QSplitter, QFrame,
     QScrollArea, QTextEdit
@@ -763,6 +763,7 @@ class PreviewWithROI(QWidget):
         self.pix_item:    Optional[QGraphicsPixmapItem] = None
         self.roi_item:    Optional[ResizableSquareItem] = None
         self.sample_item: Optional[SampleROIItem]       = None
+        self.axis_line:   Optional[QGraphicsLineItem]   = None
         self._img_w = self._img_h = 0
 
         self._crop_debounce   = QTimer(self); self._crop_debounce.setSingleShot(True)
@@ -813,6 +814,18 @@ class PreviewWithROI(QWidget):
         self._crop_debounce.start(120)
         self._sample_debounce.start(120)
 
+    def _update_axis_line(self, cx: float):
+        """Draw/move the dotted vertical axis-of-rotation line at x=cx."""
+        if self._img_h == 0:
+            return
+        if self.axis_line is None:
+            pen = QPen(QColor("#ffdd00"), 1.5)
+            pen.setStyle(Qt.PenStyle.DotLine)
+            self.axis_line = self.scene.addLine(cx, 0, cx, self._img_h, pen)
+            self.axis_line.setZValue(5)
+        else:
+            self.axis_line.setLine(cx, 0, cx, self._img_h)
+
     def set_crop_overlay(self, cx: int, top: int, extent: int):
         """Called from spinbox edits — update the green square without re-emitting."""
         if self.roi_item is None or self._img_w == 0:
@@ -823,7 +836,8 @@ class PreviewWithROI(QWidget):
         # Keep sample rect locked to the new crop bounds
         if self.sample_item:
             self.sample_item.set_crop_rect(self.roi_item.rect())
-            self.scene.update()
+        self._update_axis_line(cx)
+        self.scene.update()
 
     def set_sample_overlay(self, top_rel: int, height: int):
         """Called from spinbox edits — update the blue rectangle without re-emitting."""
@@ -851,6 +865,7 @@ class PreviewWithROI(QWidget):
         if self.sample_item:
             self.sample_item.set_crop_rect(r)
             self._sample_debounce.start(120)
+        self._update_axis_line(cx)
         self.roiChanged.emit(cx, top, size)
 
     def _emit_sample(self):
