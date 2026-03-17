@@ -766,6 +766,22 @@ class PreviewWithROI(QWidget):
         self.axis_line:   Optional[QGraphicsLineItem]   = None
         self._img_w = self._img_h = 0
 
+        # Default ROI seeded before first frame arrives
+        self._default_cx:         Optional[int] = None
+        self._default_top:        Optional[int] = None
+        self._default_extent:     Optional[int] = None
+        self._default_sample_top: Optional[int] = None
+        self._default_sample_h:   Optional[int] = None
+
+    def set_default_roi(self, cx: int, top: int, extent: int,
+                        sample_top: int, sample_h: int):
+        """Call before the first frame to place overlays at the desired defaults."""
+        self._default_cx         = cx
+        self._default_top        = top
+        self._default_extent     = extent
+        self._default_sample_top = sample_top
+        self._default_sample_h   = sample_h
+
         self._crop_debounce   = QTimer(self); self._crop_debounce.setSingleShot(True)
         self._crop_debounce.timeout.connect(self._emit_roi)
         self._sample_debounce = QTimer(self); self._sample_debounce.setSingleShot(True)
@@ -785,20 +801,29 @@ class PreviewWithROI(QWidget):
         self.scene.setSceneRect(QRectF(0, 0, self._img_w, self._img_h))
 
         if self.roi_item is None:
-            # Crop square — default to 55% of smaller dimension, centred
-            size = min(self._img_w, self._img_h) * 0.55
-            x    = (self._img_w - size) / 2
-            y    = (self._img_h - size) / 2
+            # Crop square — use seeded defaults if available, else 55% centred
+            if self._default_cx is not None:
+                size = float(self._default_extent)
+                x    = self._default_cx - size / 2
+                y    = float(self._default_top)
+            else:
+                size = min(self._img_w, self._img_h) * 0.55
+                x    = (self._img_w - size) / 2
+                y    = (self._img_h - size) / 2
             self.roi_item = ResizableSquareItem(QRectF(x, y, size, size),
                                                 self.scene.sceneRect())
             self.roi_item.setZValue(10)
             self.scene.addItem(self.roi_item)
             self.roi_item._emit_changed = lambda: self._crop_debounce.start(120)
 
-            # Sample ROI — default to middle 60% of the crop square height
+            # Sample ROI — use seeded defaults if available, else middle 60%
             crop_r = self.roi_item.rect()
-            s_top  = crop_r.top()  + crop_r.height() * 0.20
-            s_h    = crop_r.height() * 0.60
+            if self._default_sample_top is not None:
+                s_top = crop_r.top() + self._default_sample_top
+                s_h   = float(self._default_sample_h)
+            else:
+                s_top = crop_r.top() + crop_r.height() * 0.20
+                s_h   = crop_r.height() * 0.60
             self.sample_item = SampleROIItem(
                 QRectF(crop_r.left(), s_top, crop_r.width(), s_h),
                 crop_r)
@@ -1655,6 +1680,8 @@ class MainWindow(QMainWindow):
         preview_box = QGroupBox("Camera preview & ROI")
         pl = QVBoxLayout(preview_box)
         self.preview = PreviewWithROI()
+        self.preview.set_default_roi(cx=995, top=270, extent=700,
+                                     sample_top=1, sample_h=450)
         self.preview.setMinimumHeight(200)
         pl.addWidget(self.preview, 1)
         self.roi_label = QLabel("ROI: cx=995  top=270  extent=700")
