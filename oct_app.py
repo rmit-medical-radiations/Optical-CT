@@ -5,11 +5,11 @@ Optical CT Scan UI — integrated with scan_sample.py and compute_dose_profile.p
 Phases:
   1. Dark capture           (lamp off, no sample)
   2. Flat capture           (lamp on, no sample)
-  3. Pre-irradiation scan   (lamp on, sample rotating)
-  4. Wait for irradiation   (user removes sample, irradiates, replaces)
-  5. Post-irradiation scan  (lamp on, sample rotating)
-  6. Subtraction            (post − pre, auto-computed, saved to subtracted/)
-  7. Reconstruction + dose profiling (inline FBP on subtracted images)
+  3. Pre-irradiation scan   (lamp on, sample rotating → saved to pre/)
+  4. Post-irradiation scan  (user irradiates sample, replaces it, clicks to start)
+                             (lamp on, sample rotating → saved to post/)
+  5. Subtraction            (post − pre, auto-computed, saved to subtracted/)
+  6. Reconstruction + dose profiling (inline FBP on subtracted images)
 
 Image directories under each scan folder:
   pre/         — raw projections before irradiation
@@ -908,26 +908,24 @@ class DoseDepthPlot(QWidget):
 
 class PhaseButtonBar(QWidget):
     """
-    Five buttons the user must click through:
-      Dark → Flat → Pre-scan → (irradiate) → Post-scan.
+    Four buttons the user must click through:
+      Dark → Flat → Pre-scan → Post-scan.
     Only the current phase button is enabled. Each click triggers the
     corresponding phase in the scan worker.
     """
-    phase_requested = pyqtSignal(int)   # 0=dark, 1=flat, 2=pre, 3=wait, 4=post
+    phase_requested = pyqtSignal(int)   # 0=dark, 1=flat, 2=pre, 3=post
 
     LABELS = [
         "① Capture dark",
         "② Capture flat",
         "③ Pre-irradiation scan",
-        "④ Ready for post-irradiation scan",
-        "⑤ Post-irradiation scan",
+        "④ Post-irradiation scan",
     ]
     HINTS  = [
         "Turn lamp OFF and remove sample, then click",
         "Turn lamp ON with no sample, then click",
         "Place sample, lamp ON — click to begin pre-irradiation rotation",
-        "Remove sample, irradiate, replace sample — click when ready",
-        "Sample replaced, lamp ON — click to begin post-irradiation rotation",
+        "Remove sample, irradiate, replace, lamp ON — click to begin post-irradiation rotation",
     ]
 
     def __init__(self, parent=None):
@@ -1157,21 +1155,13 @@ class ScanWorker(QObject):
             if self._abort:
                 self.finished.emit(False, "Scan aborted by user"); return
 
-            # ── Phase 3: Wait for irradiation ─────────────────────────────────
+            # ── Phase 3: Post-irradiation scan ────────────────────────────────
             lamp_off()
-            self.log.emit("Remove sample, irradiate, replace — then click ④")
+            self.log.emit("Remove sample, irradiate, replace, lamp ON — then click ④")
             if not self._wait_for_user(3):
                 self.finished.emit(False, "Aborted"); return
-            self.phase_done.emit(3)
-            if self._abort:
-                self.finished.emit(False, "Aborted"); return
 
-            # ── Phase 4: Post-irradiation scan ────────────────────────────────
-            self.log.emit("Waiting: lamp ON — click ⑤ to begin post-irradiation scan")
-            if not self._wait_for_user(4):
-                self.finished.emit(False, "Aborted"); return
-
-            self.phase_running.emit(4)
+            self.phase_running.emit(3)
             self.log.emit("Post-irradiation scan…")
             lamp_on()
             ok = self._run_rotation(num_positions, degree_increment, oct_stack,
@@ -1179,7 +1169,7 @@ class ScanWorker(QObject):
                                     progress_offset=0.5, progress_scale=0.5)
             if not ok:
                 return
-            self.phase_done.emit(4)
+            self.phase_done.emit(3)
             lamp_off()
 
             if self._abort:
@@ -1611,7 +1601,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(1380, 820)
+        # Start maximised so the layout fills whatever screen is available
+        self.showMaximized()
 
         # State
         self._scan_name: Optional[str]  = None
@@ -1649,7 +1640,7 @@ class MainWindow(QMainWindow):
         preview_box = QGroupBox("Camera preview & ROI")
         pl = QVBoxLayout(preview_box)
         self.preview = PreviewWithROI()
-        self.preview.setMinimumHeight(380)
+        self.preview.setMinimumHeight(200)
         pl.addWidget(self.preview, 1)
         self.roi_label = QLabel("ROI: cx=995  top=270  extent=700")
         self.roi_label.setObjectName("dim")
