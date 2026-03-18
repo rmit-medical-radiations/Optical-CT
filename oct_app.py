@@ -1350,9 +1350,11 @@ class ScanWorker(QObject):
             if post_only:
                 self.log.emit("Computing A_post = −log(I_post / I₀) projections…")
             else:
-                self.log.emit("Computing absorbance projections and ΔA = A_post − A_pre…")
+                self.log.emit("Computing ΔA = A_post − A_pre projections…")
+            self.scan_progress.emit(0)
             self._compute_subtracted(pre_dir, post_dir, subtracted_dir, flat, map1, map2,
-                                     post_only=post_only)
+                                     post_only=post_only,
+                                     progress_cb=self.scan_progress.emit)
             self.log.emit(f"✓ Projections saved to {subtracted_dir}")
 
             self.finished.emit(True, "Scan complete")
@@ -1440,7 +1442,8 @@ class ScanWorker(QObject):
         return True
 
     def _compute_subtracted(self, pre_dir: Path, post_dir: Path, subtracted_dir: Path,
-                             flat: np.ndarray, map1, map2, post_only: bool = False):
+                             flat: np.ndarray, map1, map2, post_only: bool = False,
+                             progress_cb=None):
         """
         Convert projections to absorbance and save to subtracted_dir as uint16 PNG.
 
@@ -1454,11 +1457,14 @@ class ScanWorker(QObject):
         post_files = sorted(post_dir.glob("*.png"))
 
         if post_only:
-            for qf in post_files:
+            n = len(post_files)
+            for i, qf in enumerate(post_files):
                 post_img = cv2.imread(str(qf), cv2.IMREAD_GRAYSCALE).astype(np.float32)
                 A_post   = -np.log(np.clip(post_img, 1e-6, None) / flat_f)
                 out = np.clip(A_post * OD_SCALE, 0, 65535).astype(np.uint16)
                 cv2.imwrite(str(subtracted_dir / qf.name), out)
+                if progress_cb and n:
+                    progress_cb(int((i + 1) / n * 100))
         else:
             pre_files = sorted(pre_dir.glob("*.png"))
             if len(pre_files) != len(post_files):
@@ -1466,7 +1472,7 @@ class ScanWorker(QObject):
                               f"({len(pre_files)} vs {len(post_files)}) — "
                               f"using first {min(len(pre_files), len(post_files))} pairs")
             n = min(len(pre_files), len(post_files))
-            for pf, qf in zip(pre_files[:n], post_files[:n]):
+            for i, (pf, qf) in enumerate(zip(pre_files[:n], post_files[:n])):
                 pre_img  = cv2.imread(str(pf), cv2.IMREAD_GRAYSCALE).astype(np.float32)
                 post_img = cv2.imread(str(qf), cv2.IMREAD_GRAYSCALE).astype(np.float32)
                 A_pre    = -np.log(np.clip(pre_img,  1e-6, None) / flat_f)
@@ -1474,6 +1480,8 @@ class ScanWorker(QObject):
                 delta_A  = np.clip(A_post - A_pre, 0.0, None)
                 out = np.clip(delta_A * OD_SCALE, 0, 65535).astype(np.uint16)
                 cv2.imwrite(str(subtracted_dir / pf.name), out)
+                if progress_cb and n:
+                    progress_cb(int((i + 1) / n * 100))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
