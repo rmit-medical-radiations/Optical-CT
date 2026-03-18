@@ -1730,6 +1730,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
         self.setStyleSheet(STYLESHEET)
+        self._auto_detect_axis()   # populate crop centre X from flat field if available
 
     # ── UI construction ──────────────────────────────────────────────────────
 
