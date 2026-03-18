@@ -1912,40 +1912,50 @@ class MainWindow(QMainWindow):
         rg.setColumnStretch(1, 1)
         rg.setSpacing(6)
 
-        rg.addWidget(QLabel("Crop centre X:"), 0, 0)
+        # Scan selector
+        rg.addWidget(QLabel("Scan:"), 0, 0)
+        self.scan_selector = QComboBox()
+        self.scan_selector.setSizePolicy(
+            self.scan_selector.sizePolicy().horizontalPolicy(),
+            self.scan_selector.sizePolicy().verticalPolicy())
+        rg.addWidget(self.scan_selector, 0, 1)
+        self.browse_scan_btn = QPushButton("Browse…")
+        rg.addWidget(self.browse_scan_btn, 0, 2)
+
+        rg.addWidget(QLabel("Crop centre X:"), 1, 0)
         self.crop_cx_spin = QSpinBox()
         self.crop_cx_spin.setRange(1, 9999); self.crop_cx_spin.setValue(995)
-        rg.addWidget(self.crop_cx_spin, 0, 1)
+        rg.addWidget(self.crop_cx_spin, 1, 1)
         self.auto_axis_btn = QPushButton("Auto-detect")
         self.auto_axis_btn.setToolTip("Detect axis of rotation from nozzle edges in current frame")
-        rg.addWidget(self.auto_axis_btn, 0, 2)
+        rg.addWidget(self.auto_axis_btn, 1, 2)
 
-        rg.addWidget(QLabel("Crop top Y:"), 1, 0)
+        rg.addWidget(QLabel("Crop top Y:"), 2, 0)
         self.crop_top_spin = QSpinBox()
         self.crop_top_spin.setRange(0, 9999); self.crop_top_spin.setValue(270)
-        rg.addWidget(self.crop_top_spin, 1, 1)
+        rg.addWidget(self.crop_top_spin, 2, 1)
 
-        rg.addWidget(QLabel("Crop extent (px):"), 2, 0)
+        rg.addWidget(QLabel("Crop extent (px):"), 3, 0)
         self.crop_extent_spin = QSpinBox()
         self.crop_extent_spin.setRange(64, 4096); self.crop_extent_spin.setValue(700)
-        rg.addWidget(self.crop_extent_spin, 2, 1)
+        rg.addWidget(self.crop_extent_spin, 3, 1)
 
-        rg.addWidget(QLabel("Sample top (px):"), 3, 0)
+        rg.addWidget(QLabel("Sample top (px):"), 4, 0)
         self.sample_top_spin = QSpinBox()
         self.sample_top_spin.setRange(0, 9999); self.sample_top_spin.setValue(0)
-        rg.addWidget(self.sample_top_spin, 3, 1)
+        rg.addWidget(self.sample_top_spin, 4, 1)
 
-        rg.addWidget(QLabel("Sample height (px):"), 4, 0)
+        rg.addWidget(QLabel("Sample height (px):"), 5, 0)
         self.sample_h_spin = QSpinBox()
         self.sample_h_spin.setRange(1, 9999); self.sample_h_spin.setValue(450)
-        rg.addWidget(self.sample_h_spin, 4, 1)
+        rg.addWidget(self.sample_h_spin, 5, 1)
 
         self.force_vol_cb = QCheckBox("Force new volume")
-        rg.addWidget(self.force_vol_cb, 5, 0, 1, 2)
+        rg.addWidget(self.force_vol_cb, 6, 0, 1, 2)
 
-        rg.addWidget(QLabel("Recon progress:"), 6, 0)
+        rg.addWidget(QLabel("Recon progress:"), 7, 0)
         self.recon_progress = QProgressBar()
-        rg.addWidget(self.recon_progress, 6, 1)
+        rg.addWidget(self.recon_progress, 7, 1)
 
         recon_btn_row = QHBoxLayout()
         self.recon_btn = QPushButton("▶  RUN RECONSTRUCTION")
@@ -1958,7 +1968,7 @@ class MainWindow(QMainWindow):
         self.cancel_recon_btn.setEnabled(False)
         recon_btn_row.addWidget(self.recon_btn, 3)
         recon_btn_row.addWidget(self.cancel_recon_btn, 1)
-        rg.addLayout(recon_btn_row, 7, 0, 1, 2)
+        rg.addLayout(recon_btn_row, 8, 0, 1, 2)
 
         right.addWidget(recon_box)
 
@@ -1996,6 +2006,9 @@ class MainWindow(QMainWindow):
         self.export_btn.clicked.connect(lambda: ExportDialog(self).exec())
         self.phase_bar.phase_requested.connect(self._on_phase_requested)
         self.auto_axis_btn.clicked.connect(self._auto_detect_axis)
+        self.browse_scan_btn.clicked.connect(self._browse_scan)
+        self.scan_selector.currentIndexChanged.connect(self._on_scan_selected)
+        self._populate_scan_selector()
 
         # Spinbox → overlay (crop)
         for spin in (self.crop_cx_spin, self.crop_top_spin, self.crop_extent_spin):
@@ -2163,12 +2176,58 @@ class MainWindow(QMainWindow):
         self.start_stop_btn.setStyleSheet("")   # restore stylesheet objectName style
         self.start_stop_btn.setEnabled(True)
         self.cancel_scan_btn.setEnabled(False)
-        self.recon_btn.setEnabled(ok)   # only enable after a successful scan
+        if ok and self._scan_dir is not None:
+            self._populate_scan_selector(select_path=self._scan_dir)
+        else:
+            self._on_scan_selected()   # re-evaluate enable state
         if not ok:
             self.phase_bar.reset()
         self._log(f"{'✓' if ok else '✗'} {msg}")
         if not ok and "abort" not in msg.lower() and "cancel" not in msg.lower():
             QMessageBox.critical(self, "Scan error", msg)
+
+    # ── Scan selector ─────────────────────────────────────────────────────────
+
+    def _populate_scan_selector(self, select_path: Optional[Path] = None):
+        """Refresh the scan combobox from SCANS_DIR; optionally pre-select a path."""
+        self.scan_selector.blockSignals(True)
+        self.scan_selector.clear()
+        scans = [p for p in sorted(SCANS_DIR.iterdir(), reverse=True)
+                 if p.is_dir() and (p / "subtracted").is_dir()]  \
+                 if SCANS_DIR.exists() else []
+        for p in scans:
+            self.scan_selector.addItem(p.name, userData=p)
+        if select_path is not None:
+            for i in range(self.scan_selector.count()):
+                if self.scan_selector.itemData(i) == select_path:
+                    self.scan_selector.setCurrentIndex(i)
+                    break
+        self.scan_selector.blockSignals(False)
+        self._on_scan_selected()
+
+    def _on_scan_selected(self):
+        path = self.scan_selector.currentData()
+        self.recon_btn.setEnabled(
+            path is not None and self._mode == "idle")
+
+    def _browse_scan(self):
+        """Let the user pick any scan folder outside SCANS_DIR."""
+        folder = QFileDialog.getExistingDirectory(self, "Select scan folder",
+                                                  str(SCANS_DIR))
+        if not folder:
+            return
+        p = Path(folder)
+        if not (p / "subtracted").is_dir():
+            QMessageBox.warning(self, "Invalid scan",
+                                "Selected folder has no 'subtracted' subdirectory.")
+            return
+        # Add to combobox if not already present, then select it
+        for i in range(self.scan_selector.count()):
+            if self.scan_selector.itemData(i) == p:
+                self.scan_selector.setCurrentIndex(i)
+                return
+        self.scan_selector.insertItem(0, p.name, userData=p)
+        self.scan_selector.setCurrentIndex(0)
 
     # ── Reconstruction ────────────────────────────────────────────────────────
 
@@ -2177,15 +2236,10 @@ class MainWindow(QMainWindow):
             self._log("Cannot reconstruct while scan is running.")
             return
 
-        scan_dir = self._scan_dir
+        scan_dir = self.scan_selector.currentData()
         if scan_dir is None:
-            # try to pick the most recent scan
-            scans = list_scans()
-            if not scans:
-                QMessageBox.warning(self, "Reconstruction", "No scan directory found.")
-                return
-            scan_dir = scans[0]
-            self._scan_dir = scan_dir
+            QMessageBox.warning(self, "Reconstruction", "No scan selected.")
+            return
 
         recon_dir      = str(scan_dir / "reconstruct")
         dose_dir       = str(scan_dir / "dose-profiles")
@@ -2232,9 +2286,9 @@ class MainWindow(QMainWindow):
 
     def _recon_finished(self, ok: bool, msg: str):
         self._mode = "idle"
-        self.recon_btn.setEnabled(True)
         self.cancel_recon_btn.setEnabled(False)
         self.start_stop_btn.setEnabled(True)
+        self._on_scan_selected()   # re-enable recon btn if a valid scan is still selected
         self._log(f"{'✓' if ok else '✗'} {msg}")
         if not ok and "abort" not in msg.lower() and "cancel" not in msg.lower():
             QMessageBox.critical(self, "Reconstruction error", msg)
