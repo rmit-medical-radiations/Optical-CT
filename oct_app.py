@@ -8,13 +8,16 @@ Phases:
   3. Pre-irradiation scan   (lamp on, sample rotating → saved to pre/)
   4. Post-irradiation scan  (user irradiates sample, replaces it, clicks to start)
                              (lamp on, sample rotating → saved to post/)
-  5. Subtraction            (post − pre, auto-computed, saved to subtracted/)
-  6. Reconstruction + dose profiling (inline FBP on subtracted images)
+  5. Subtraction            (ΔA = A_post − A_pre, auto-computed, saved to subtracted/)
+  6. Reconstruction + dose profiling (inline FBP on ΔA projections)
+
+Absorbance conversion: A = −log(I / I₀) where I₀ is the flat-field image.
+ΔA projections are encoded as uint16 PNG (value = ΔA × OD_SCALE).
 
 Image directories under each scan folder:
-  pre/         — raw projections before irradiation
-  post/        — raw projections after irradiation
-  subtracted/  — (post − pre).clip(0) projections used for reconstruction
+  pre/         — raw intensity projections before irradiation
+  post/        — raw intensity projections after irradiation
+  subtracted/  — ΔA = A_post − A_pre projections (uint16, OD_SCALE encoded)
 
 Hardware is driven from QThread workers; the main thread only updates the UI.
 Camera preview uses the real Pi camera HTTP endpoint; falls back to simulator.
@@ -109,6 +112,10 @@ BTN_STOP    = "#e05252"
 PHASE_IDLE  = "#252932"
 PHASE_ACTIVE= "#00d4aa"
 PHASE_DONE  = "#1a3d34"
+
+# Absorbance encoding: uint16 PNG value = ΔA * OD_SCALE
+# Covers OD range [0, 4] with ~0.00006 OD resolution.
+OD_SCALE = 65535.0 / 4.0
 
 
 STYLESHEET = f"""
@@ -1282,9 +1289,9 @@ class ScanWorker(QObject):
                 self.finished.emit(False, "Scan aborted by user"); return
 
             # ── Subtraction: post − pre ────────────────────────────────────────
-            self.log.emit("Computing subtracted images (post − pre)…")
-            self._compute_subtracted(pre_dir, post_dir, subtracted_dir, map1, map2)
-            self.log.emit(f"✓ Subtracted images saved to {subtracted_dir}")
+            self.log.emit("Computing absorbance projections and ΔA = A_post − A_pre…")
+            self._compute_subtracted(pre_dir, post_dir, subtracted_dir, flat, map1, map2)
+            self.log.emit(f"✓ ΔA projections saved to {subtracted_dir}")
 
             self.finished.emit(True, "Scan complete")
 
@@ -1371,8 +1378,15 @@ class ScanWorker(QObject):
         return True
 
     def _compute_subtracted(self, pre_dir: Path, post_dir: Path, subtracted_dir: Path,
-                             map1, map2):
-        """Compute subtracted = (post − pre).clip(0) and save as uint16 PNG."""
+                             flat: np.ndarray, map1, map2):
+        """
+        Convert pre/post projections to absorbance and compute ΔA = A_post − A_pre.
+
+        A = −log(I / I₀)  where I₀ is the flat-field image.
+        ΔA is clipped to [0, ∞) then encoded as uint16 PNG using OD_SCALE so that
+        the reconstruction worker can decode it without re-applying line_integrals.
+        """
+        flat_f = np.clip(flat.astype(np.float32), 1e-6, None)
         pre_files  = sorted(pre_dir.glob("*.png"))
         post_files = sorted(post_dir.glob("*.png"))
         if len(pre_files) != len(post_files):
@@ -1380,12 +1394,14 @@ class ScanWorker(QObject):
                           f"({len(pre_files)} vs {len(post_files)}) — "
                           f"using first {min(len(pre_files), len(post_files))} pairs")
         n = min(len(pre_files), len(post_files))
-        for i, (pf, qf) in enumerate(zip(pre_files[:n], post_files[:n])):
-            pre_img  = cv2.imread(str(pf),  cv2.IMREAD_GRAYSCALE).astype(np.float32)
+        for pf, qf in zip(pre_files[:n], post_files[:n]):
+            pre_img  = cv2.imread(str(pf), cv2.IMREAD_GRAYSCALE).astype(np.float32)
             post_img = cv2.imread(str(qf), cv2.IMREAD_GRAYSCALE).astype(np.float32)
-            diff = np.clip(post_img - pre_img, 0, 65535).astype(np.uint16)
-            out_path = subtracted_dir / pf.name
-            cv2.imwrite(str(out_path), diff)
+            A_pre  = -np.log(np.clip(pre_img,  1e-6, None) / flat_f)
+            A_post = -np.log(np.clip(post_img, 1e-6, None) / flat_f)
+            delta_A = np.clip(A_post - A_pre, 0.0, None)
+            out = np.clip(delta_A * OD_SCALE, 0, 65535).astype(np.uint16)
+            cv2.imwrite(str(subtracted_dir / pf.name), out)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1427,7 +1443,7 @@ class ReconWorker(QObject):
             dark_path = str(CONFIG_DIR / "dark.npy")
             flat_path = str(CONFIG_DIR / "flat.npy")
 
-            self.log.emit("Loading images...")
+            self.log.emit("Loading ΔA projections...")
             self.progress.emit(5)
             imgs = load_png_stack(image_dir)
             dark = np.load(dark_path).astype(np.float32)
@@ -1442,8 +1458,10 @@ class ReconWorker(QObject):
             ex = cv2.normalize(ex, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
             cv2.imwrite(str(Path(reconstruct_dir) / "example_cropped.png"), ex)
 
-            self.log.emit("Computing line integrals...")
-            P = line_integrals(imgs, dark, flat)
+            # Images are pre-computed ΔA projections encoded as uint16 — decode directly.
+            # (line_integrals is not applied; the subtraction pipeline already produced
+            #  ΔA = A_post − A_pre = −log(I_post/I₀) − (−log(I_pre/I₀)))
+            P = imgs / OD_SCALE
             angles_deg = np.arange(P.shape[0], dtype=np.float32) * float(degree_increment)
             self.progress.emit(20)
 
