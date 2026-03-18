@@ -74,6 +74,15 @@ CONFIG_DIR  = BASE_DIR / "config"
 for d in (SCANS_DIR, CONFIG_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
+# Write a light-coloured down-arrow SVG for the QComboBox indicator so it is
+# visible on the dark background regardless of the system palette.
+_ARROW_SVG_PATH = CONFIG_DIR / "arrow_down.svg"
+_ARROW_SVG_PATH.write_text(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8">'
+    '<polygon points="0,1 8,1 4,7" fill="#e2e6ed"/>'
+    '</svg>'
+)
+
 CAMERA_URL      = "http://192.168.7.2:8000"
 SERIAL_PORT     = "/dev/ttyUSB0"
 BAUDRATE        = 9600
@@ -214,6 +223,11 @@ QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
 QComboBox::drop-down {{
     border-left: 1px solid {BORDER_CLR};
     width: 20px;
+}}
+QComboBox::down-arrow {{
+    image: url({_ARROW_SVG_PATH});
+    width: 8px;
+    height: 8px;
 }}
 QComboBox QAbstractItemView {{
     background-color: {PANEL_BG};
