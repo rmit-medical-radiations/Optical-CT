@@ -1915,12 +1915,7 @@ class MainWindow(QMainWindow):
         # Scan selector
         rg.addWidget(QLabel("Scan:"), 0, 0)
         self.scan_selector = QComboBox()
-        self.scan_selector.setSizePolicy(
-            self.scan_selector.sizePolicy().horizontalPolicy(),
-            self.scan_selector.sizePolicy().verticalPolicy())
-        rg.addWidget(self.scan_selector, 0, 1)
-        self.browse_scan_btn = QPushButton("Browse…")
-        rg.addWidget(self.browse_scan_btn, 0, 2)
+        rg.addWidget(self.scan_selector, 0, 1, 1, 2)
 
         rg.addWidget(QLabel("Crop centre X:"), 1, 0)
         self.crop_cx_spin = QSpinBox()
@@ -2006,7 +2001,6 @@ class MainWindow(QMainWindow):
         self.export_btn.clicked.connect(lambda: ExportDialog(self).exec())
         self.phase_bar.phase_requested.connect(self._on_phase_requested)
         self.auto_axis_btn.clicked.connect(self._auto_detect_axis)
-        self.browse_scan_btn.clicked.connect(self._browse_scan)
         self.scan_selector.currentIndexChanged.connect(self._on_scan_selected)
         self._populate_scan_selector()
 
@@ -2209,25 +2203,6 @@ class MainWindow(QMainWindow):
         path = self.scan_selector.currentData()
         self.recon_btn.setEnabled(
             path is not None and self._mode == "idle")
-
-    def _browse_scan(self):
-        """Let the user pick any scan folder outside SCANS_DIR."""
-        folder = QFileDialog.getExistingDirectory(self, "Select scan folder",
-                                                  str(SCANS_DIR))
-        if not folder:
-            return
-        p = Path(folder)
-        if not (p / "subtracted").is_dir():
-            QMessageBox.warning(self, "Invalid scan",
-                                "Selected folder has no 'subtracted' subdirectory.")
-            return
-        # Add to combobox if not already present, then select it
-        for i in range(self.scan_selector.count()):
-            if self.scan_selector.itemData(i) == p:
-                self.scan_selector.setCurrentIndex(i)
-                return
-        self.scan_selector.insertItem(0, p.name, userData=p)
-        self.scan_selector.setCurrentIndex(0)
 
     # ── Reconstruction ────────────────────────────────────────────────────────
 
