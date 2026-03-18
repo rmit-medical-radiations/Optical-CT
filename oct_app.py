@@ -1013,10 +1013,11 @@ class DoseDepthPlot(QWidget):
 
 class PhaseButtonBar(QWidget):
     """
-    Four buttons the user must click through:
-      Dark → Flat → Pre-scan → Post-scan.
-    Only the current phase button is enabled. Each click triggers the
-    corresponding phase in the scan worker.
+    Checklist showing all four scan phases, with a single PROCEED button
+    for the active phase and an instruction line explaining what to do.
+
+    External interface is unchanged: set_phase_state / ready_phase / reset
+    and the phase_requested signal.
     """
     phase_requested = pyqtSignal(int)   # 0=dark, 1=flat, 2=pre, 3=post
 
@@ -1026,84 +1027,84 @@ class PhaseButtonBar(QWidget):
         "③ Pre-irradiation scan",
         "④ Post-irradiation scan",
     ]
-    HINTS  = [
-        "Turn lamp OFF and remove sample, then click",
-        "Turn lamp ON with no sample, then click",
-        "Place sample, lamp ON — click to begin pre-irradiation rotation",
-        "Remove sample, irradiate, replace, lamp ON — click to begin post-irradiation rotation",
+    HINTS = [
+        "Turn lamp OFF and remove sample",
+        "Turn lamp ON with no sample",
+        "Place sample, lamp ON — begin pre-irradiation rotation",
+        "Remove sample, irradiate, replace sample, lamp ON — begin post-irradiation rotation",
     ]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 2, 0, 2)
-        layout.setSpacing(4)
+        layout.setSpacing(3)
 
-        self._buttons = []
-        self._hints   = []
+        # Read-only checklist rows
+        self._step_labels = []
+        for label in self.LABELS:
+            lbl = QLabel(f"○  {label}")
+            lbl.setObjectName("dim")
+            self._step_labels.append(lbl)
+            layout.addWidget(lbl)
 
-        for i, (label, hint) in enumerate(zip(self.LABELS, self.HINTS)):
-            row = QHBoxLayout()
-            row.setSpacing(8)
+        # Instruction text for the current phase
+        self._instruction_lbl = QLabel("")
+        self._instruction_lbl.setObjectName("dim")
+        self._instruction_lbl.setWordWrap(True)
+        layout.addWidget(self._instruction_lbl)
 
-            btn = QPushButton(label)
-            btn.setMinimumHeight(32)
-            btn.setEnabled(False)
-            btn.clicked.connect(lambda _, idx=i: self.phase_requested.emit(idx))
-            self._buttons.append(btn)
-
-            hint_lbl = QLabel(hint)
-            hint_lbl.setObjectName("dim")
-            hint_lbl.setWordWrap(False)
-            self._hints.append(hint_lbl)
-
-            row.addWidget(btn, 0)
-            row.addWidget(hint_lbl, 1)
-            layout.addLayout(row)
-
-    def _btn_style(self, state):
-        """state: 0=locked, 1=ready (pulse), 2=active, 3=done"""
-        if state == 0:
-            return (f"background:{PANEL_BG}; border:1px solid {BORDER_CLR};"
-                    f"color:{TEXT_DIM}; border-radius:3px;")
-        if state == 1:
-            return (f"background:#0d2e25; border:1px solid {ACCENT};"
-                    f"color:{ACCENT}; border-radius:3px; font-weight:bold;")
-        if state == 2:
-            return (f"background:#1a3322; border:1px solid {ACCENT};"
-                    f"color:{ACCENT}; border-radius:3px; font-weight:bold;")
-        # done
-        return (f"background:{PHASE_DONE}; border:1px solid {ACCENT};"
-                f"color:{TEXT_DIM}; border-radius:3px;")
+        # Single proceed button shared across all phases
+        self._proceed_btn = QPushButton("▶  PROCEED")
+        self._proceed_btn.setMinimumHeight(36)
+        self._proceed_btn.setEnabled(False)
+        self._current_idx = -1
+        self._proceed_btn.clicked.connect(
+            lambda: self.phase_requested.emit(self._current_idx)
+        )
+        layout.addWidget(self._proceed_btn)
 
     def set_phase_state(self, idx: int, state: int):
         """state: 0=locked, 1=ready-to-click, 2=running, 3=done"""
-        if 0 <= idx < len(self._buttons):
-            btn = self._buttons[idx]
-            btn.setEnabled(state == 1)
-            btn.setStyleSheet(self._btn_style(state))
-            if state == 1:
-                btn.setText(f"▶ {self.LABELS[idx]}")
-            elif state == 2:
-                btn.setText(f"⏳ {self.LABELS[idx]}…")
-            elif state == 3:
-                btn.setText(f"✓ {self.LABELS[idx]}")
-            else:
-                btn.setText(self.LABELS[idx])
+        if not (0 <= idx < len(self._step_labels)):
+            return
+        lbl = self._step_labels[idx]
+        if state == 3:                          # done
+            lbl.setText(f"✓  {self.LABELS[idx]}")
+            lbl.setStyleSheet(f"color:{TEXT_DIM};")
+        elif state == 1:                        # ready — waiting for user
+            lbl.setText(f"▶  {self.LABELS[idx]}")
+            lbl.setStyleSheet(f"color:{ACCENT}; font-weight:bold;")
+            self._instruction_lbl.setText(self.HINTS[idx])
+            self._proceed_btn.setEnabled(True)
+            self._proceed_btn.setText("▶  PROCEED")
+            self._current_idx = idx
+        elif state == 2:                        # running
+            lbl.setText(f"⏳  {self.LABELS[idx]}…")
+            lbl.setStyleSheet(f"color:{ACCENT};")
+            self._proceed_btn.setEnabled(False)
+            self._proceed_btn.setText(f"⏳  {self.LABELS[idx]}…")
+        else:                                   # locked / not yet reached
+            lbl.setText(f"○  {self.LABELS[idx]}")
+            lbl.setStyleSheet(f"color:{TEXT_DIM};")
 
     def reset(self):
-        for i in range(len(self._buttons)):
+        for i in range(len(self._step_labels)):
             self.set_phase_state(i, 0)
+        self._instruction_lbl.setText("")
+        self._proceed_btn.setEnabled(False)
+        self._proceed_btn.setText("▶  PROCEED")
+        self._current_idx = -1
 
     def ready_phase(self, idx: int):
-        """Mark phase idx as ready-to-click, lock all others."""
-        for i in range(len(self._buttons)):
+        """Mark phase idx as ready-to-click; earlier phases done, later locked."""
+        for i in range(len(self._step_labels)):
             if i < idx:
-                self.set_phase_state(i, 3)   # already done
+                self.set_phase_state(i, 3)
             elif i == idx:
-                self.set_phase_state(i, 1)   # ready
+                self.set_phase_state(i, 1)
             else:
-                self.set_phase_state(i, 0)   # locked
+                self.set_phase_state(i, 0)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
