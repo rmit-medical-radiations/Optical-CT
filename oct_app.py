@@ -2040,6 +2040,7 @@ class MainWindow(QMainWindow):
         self._log("Cancelling scan…")
         if self._worker and hasattr(self._worker, 'abort'):
             self._worker.abort()
+        lamp_off()
         self.cancel_scan_btn.setEnabled(False)
 
     def _on_phase_ready(self, idx: int):
