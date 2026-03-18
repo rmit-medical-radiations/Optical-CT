@@ -430,6 +430,34 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     depth_mm = np.arange(len(od_depth)) * mm_per_slice_y
     return depth_mm, rel, dose, od_depth
 
+def find_axis_from_nozzle(img: np.ndarray) -> Optional[float]:
+    """
+    Estimate the axis-of-rotation X coordinate from the apparatus features
+    visible in the top third of the image (nozzle / holder edges).
+
+    Returns the estimated centre X in image pixels, or None if detection fails.
+    """
+    top = img[:img.shape[0] // 3, :]
+    edges = cv2.Canny(top, 50, 150)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180,
+                             threshold=50, minLineLength=30, maxLineGap=5)
+    if lines is None:
+        return None
+
+    xs = []
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+        if angle > 70:          # near-vertical lines only
+            xs.append((x1 + x2) / 2.0)
+
+    if len(xs) < 2:
+        return None
+
+    xs.sort()
+    return (xs[0] + xs[-1]) / 2.0
+
+
 def ema(values, alpha=0.1):
     out = []
     for i, v in enumerate(values):
@@ -1670,6 +1698,7 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._mode   = "idle"
         self._updating_overlays = False   # guard against spinbox↔overlay feedback loops
+        self._last_preview_frame: Optional[np.ndarray] = None
 
         # Camera
         self._sim = CameraSimulator()
@@ -1803,6 +1832,9 @@ class MainWindow(QMainWindow):
         self.crop_cx_spin = QSpinBox()
         self.crop_cx_spin.setRange(1, 9999); self.crop_cx_spin.setValue(995)
         rg.addWidget(self.crop_cx_spin, 0, 1)
+        self.auto_axis_btn = QPushButton("Auto-detect")
+        self.auto_axis_btn.setToolTip("Detect axis of rotation from nozzle edges in current frame")
+        rg.addWidget(self.auto_axis_btn, 0, 2)
 
         rg.addWidget(QLabel("Crop top Y:"), 1, 0)
         self.crop_top_spin = QSpinBox()
@@ -1878,6 +1910,7 @@ class MainWindow(QMainWindow):
         self.cancel_recon_btn.clicked.connect(self._cancel_recon)
         self.export_btn.clicked.connect(lambda: ExportDialog(self).exec())
         self.phase_bar.phase_requested.connect(self._on_phase_requested)
+        self.auto_axis_btn.clicked.connect(self._auto_detect_axis)
 
         # Spinbox → overlay (crop)
         for spin in (self.crop_cx_spin, self.crop_top_spin, self.crop_extent_spin):
@@ -1911,9 +1944,24 @@ class MainWindow(QMainWindow):
 
     # ── Preview update ────────────────────────────────────────────────────────
 
+    def _auto_detect_axis(self):
+        flat_path = CONFIG_DIR / "flat.npy"
+        if not flat_path.exists():
+            self._log("⚠ No flat field found — capture a flat before detecting the axis.")
+            return
+        img = np.load(flat_path)
+        cx = find_axis_from_nozzle(img)
+        if cx is None:
+            self._log("⚠ Axis detection failed — no vertical edges found in nozzle region.")
+            return
+        cx_int = int(round(cx))
+        self._log(f"✓ Axis detected at x={cx_int} px")
+        self.crop_cx_spin.setValue(cx_int)
+
     def _update_preview(self):
         if self._mode != "scanning":
             img = self._sim.get_frame()
+            self._last_preview_frame = img
             self.preview.set_frame(img)
 
     # ── ROI ──────────────────────────────────────────────────────────────────
