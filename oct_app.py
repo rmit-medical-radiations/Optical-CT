@@ -1898,7 +1898,7 @@ class MainWindow(QMainWindow):
 
         ctrl_grid.addWidget(QLabel("Settle (ms):"), 4, 0)
         self.settle_spin = QSpinBox()
-        self.settle_spin.setRange(100, 2000); self.settle_spin.setValue(800)
+        self.settle_spin.setRange(100, 2000); self.settle_spin.setValue(300)
         self.settle_spin.setSingleStep(100)
         self.settle_spin.setToolTip("Wait after motor stops before capturing (reduce to speed up scan)")
         ctrl_grid.addWidget(self.settle_spin, 4, 1)
