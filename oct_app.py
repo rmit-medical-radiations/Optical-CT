@@ -2235,6 +2235,18 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Reconstruction", "No scan selected.")
             return
 
+        # Validate projection count — need at least 2 views for FBP
+        subtracted_dir = scan_dir / "subtracted"
+        n_proj = len(list(subtracted_dir.glob("*.png"))) if subtracted_dir.is_dir() else 0
+        min_proj = max(2, int(360 / max(self.step_spin.value(), 1)))
+        if n_proj < min_proj:
+            msg = (f"Only {n_proj} projection(s) found in '{subtracted_dir.name}' "
+                   f"(need at least {min_proj} for a {self.step_spin.value()}° step scan).")
+            self._log(f"✗ {msg}")
+            self.recon_progress.setValue(0)
+            QMessageBox.warning(self, "Insufficient projections", msg)
+            return
+
         recon_dir      = str(scan_dir / "reconstruct")
         dose_dir       = str(scan_dir / "dose-profiles")
         depth_dose_dir = str(scan_dir / "depth-dose")
