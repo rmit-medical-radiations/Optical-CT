@@ -1683,7 +1683,7 @@ def list_scans() -> List[Path]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ExportDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, current_scan: Optional[Path] = None):
         super().__init__(parent)
         self.setWindowTitle("Export scan")
         self.setMinimumSize(600, 380)
@@ -1721,6 +1721,7 @@ class ExportDialog(QDialog):
         self._selected_scan: Optional[Path] = None
         self._selected_dest: Optional[Path] = None
         self._thread = self._worker = None
+        self._current_scan = current_scan
 
         self.refresh_btn.clicked.connect(self._refresh_scans)
         self.browse_btn.clicked.connect(self._browse)
@@ -1739,7 +1740,15 @@ class ExportDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, str(d))
             self.scan_list.addItem(item)
         if self.scan_list.count():
-            self.scan_list.setCurrentRow(0)
+            # Pre-select the current scan if provided, otherwise default to row 0
+            selected_row = 0
+            if self._current_scan is not None:
+                target = str(self._current_scan)
+                for i in range(self.scan_list.count()):
+                    if self.scan_list.item(i).data(Qt.ItemDataRole.UserRole) == target:
+                        selected_row = i
+                        break
+            self.scan_list.setCurrentRow(selected_row)
 
     def _refresh_mounts(self):
         self.mount_combo.blockSignals(True)
@@ -2032,7 +2041,9 @@ class MainWindow(QMainWindow):
         self.cancel_scan_btn.clicked.connect(self._cancel_scan)
         self.recon_btn.clicked.connect(self._start_reconstruction)
         self.cancel_recon_btn.clicked.connect(self._cancel_recon)
-        self.export_btn.clicked.connect(lambda: ExportDialog(self).exec())
+        self.export_btn.clicked.connect(
+            lambda: ExportDialog(self, current_scan=self.scan_selector.currentData()).exec()
+        )
         self.phase_bar.phase_requested.connect(self._on_phase_requested)
         self.auto_axis_btn.clicked.connect(self._auto_detect_axis)
         self.scan_selector.currentIndexChanged.connect(self._on_scan_selected)
