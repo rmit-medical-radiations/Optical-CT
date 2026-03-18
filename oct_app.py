@@ -211,6 +211,25 @@ QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox {{
 QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
     border-color: {ACCENT};
 }}
+QComboBox::drop-down {{
+    border: none;
+}}
+QComboBox QAbstractItemView {{
+    background-color: {PANEL_BG};
+    border: 1px solid {BORDER_CLR};
+    color: {TEXT_MAIN};
+    selection-background-color: #0d2e25;
+    selection-color: {ACCENT};
+    outline: none;
+}}
+QComboBox QAbstractItemView::item {{
+    padding: 4px 8px;
+    min-height: 22px;
+}}
+QComboBox QAbstractItemView::item:hover {{
+    background-color: #0d2e25;
+    color: {ACCENT};
+}}
 QLabel {{
     color: {TEXT_MAIN};
 }}
