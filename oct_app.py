@@ -1821,7 +1821,7 @@ class MainWindow(QMainWindow):
         left.setSpacing(6)
 
         # Camera preview
-        preview_box = QGroupBox("Camera preview & ROI")
+        preview_box = QGroupBox("Camera preview")
         pl = QVBoxLayout(preview_box)
         self.preview = PreviewWithROI()
         self.preview.set_default_roi(cx=995, top=270, extent=700,
@@ -1926,7 +1926,7 @@ class MainWindow(QMainWindow):
         right.setSpacing(6)
 
         # Reconstruction controls
-        recon_box = QGroupBox("Reconstruction & dose analysis")
+        recon_box = QGroupBox("Reconstruction")
         rg = QGridLayout(recon_box)
         rg.setColumnStretch(1, 1)
         rg.setSpacing(6)
