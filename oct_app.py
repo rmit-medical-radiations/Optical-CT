@@ -438,7 +438,9 @@ def find_axis_from_nozzle(img: np.ndarray) -> Optional[float]:
     Returns the estimated centre X in image pixels, or None if detection fails.
     """
     top = img[:img.shape[0] // 3, :]
-    edges = cv2.Canny(top, 50, 150)
+    # Canny requires uint8; normalise whatever dtype arrives
+    top_u8 = cv2.normalize(top, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    edges = cv2.Canny(top_u8, 50, 150)
     lines = cv2.HoughLinesP(edges, 1, np.pi / 180,
                              threshold=50, minLineLength=30, maxLineGap=5)
     if lines is None:
