@@ -1889,6 +1889,7 @@ class MainWindow(QMainWindow):
         self.recon_btn = QPushButton("▶  RUN RECONSTRUCTION")
         self.recon_btn.setObjectName("start_btn")
         self.recon_btn.setMinimumHeight(36)
+        self.recon_btn.setEnabled(False)
         self.cancel_recon_btn = QPushButton("✕  CANCEL")
         self.cancel_recon_btn.setObjectName("stop_btn")
         self.cancel_recon_btn.setMinimumHeight(36)
@@ -2094,7 +2095,7 @@ class MainWindow(QMainWindow):
         self.start_stop_btn.setStyleSheet("")   # restore stylesheet objectName style
         self.start_stop_btn.setEnabled(True)
         self.cancel_scan_btn.setEnabled(False)
-        self.recon_btn.setEnabled(True)
+        self.recon_btn.setEnabled(ok)   # only enable after a successful scan
         if not ok:
             self.phase_bar.reset()
         self._log(f"{'✓' if ok else '✗'} {msg}")
