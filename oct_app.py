@@ -432,32 +432,33 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
 
 def find_axis_from_nozzle(img: np.ndarray) -> Optional[float]:
     """
-    Estimate the axis-of-rotation X coordinate from the apparatus features
-    visible in the top third of the image (nozzle / holder edges).
+    Estimate the axis-of-rotation X coordinate by detecting the circular
+    nozzle/sample-holder cross-section in the top portion of the image.
 
-    Returns the estimated centre X in image pixels, or None if detection fails.
+    The nozzle is the most reliable fixed feature: its centre IS the axis
+    of rotation regardless of sample geometry.  HoughCircles locates it
+    directly.  Returns the centre X in image pixels, or None on failure.
     """
-    top = img[:img.shape[0] // 3, :]
-    # Canny requires uint8; normalise whatever dtype arrives
+    h, w = img.shape[:2]
+    # Only look at the top 20 % of the image where the nozzle is visible
+    top = img[:max(1, int(h * 0.20)), :]
     top_u8 = cv2.normalize(top, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    edges = cv2.Canny(top_u8, 50, 150)
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180,
-                             threshold=50, minLineLength=30, maxLineGap=5)
-    if lines is None:
-        return None
+    blurred = cv2.GaussianBlur(top_u8, (9, 9), 2)
 
-    xs = []
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
-        angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
-        if angle > 70:          # near-vertical lines only
-            xs.append((x1 + x2) / 2.0)
+    # Detect the circular nozzle cross-section
+    circles = cv2.HoughCircles(
+        blurred, cv2.HOUGH_GRADIENT, dp=1,
+        minDist=w // 4,
+        param1=50, param2=30,
+        minRadius=w // 20,   # ~5 % of image width
+        maxRadius=w // 6,    # ~17 % of image width
+    )
+    if circles is not None:
+        # OpenCV returns circles sorted by accumulator strength; take the best
+        cx = float(circles[0, 0, 0])
+        return cx
 
-    if len(xs) < 2:
-        return None
-
-    xs.sort()
-    return (xs[0] + xs[-1]) / 2.0
+    return None
 
 
 def ema(values, alpha=0.1):
@@ -906,10 +907,12 @@ class PreviewWithROI(QWidget):
         new_r = QRectF(x, top, extent, extent)
         self.roi_item._fixed_cx = float(cx)
         self.roi_item.set_rect(new_r)
-        # Keep sample rect locked to the new crop bounds
+        # Read the actual centre after _constrain may have adjusted the rect
+        actual_cx = self.roi_item.rect().center().x()
+        self.roi_item._fixed_cx = actual_cx
         if self.sample_item:
             self.sample_item.set_crop_rect(self.roi_item.rect())
-        self._update_axis_line(cx)
+        self._update_axis_line(actual_cx)
         self.scene.update()
 
     def set_sample_overlay(self, top_rel: int, height: int):
