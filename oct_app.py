@@ -1050,7 +1050,7 @@ class PhaseButtonBar(QWidget):
 
         # Instruction text for the current phase
         self._instruction_lbl = QLabel("")
-        self._instruction_lbl.setObjectName("dim")
+        self._instruction_lbl.setStyleSheet(f"color:{TEXT_MAIN};")
         self._instruction_lbl.setWordWrap(True)
         layout.addWidget(self._instruction_lbl)
 
