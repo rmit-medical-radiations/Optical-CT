@@ -1978,6 +1978,9 @@ class MainWindow(QMainWindow):
             return
         cx_int = int(round(cx))
         self._log(f"✓ Axis detected at x={cx_int} px")
+        # Update the seeded default so the first frame places the ROI correctly
+        # (roi_item may not exist yet if called on startup before any frame arrives)
+        self.preview._default_cx = cx_int
         self.crop_cx_spin.setValue(cx_int)
 
     def _update_preview(self):
