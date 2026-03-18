@@ -1719,6 +1719,7 @@ class MainWindow(QMainWindow):
         self._mode   = "idle"
         self._updating_overlays = False   # guard against spinbox↔overlay feedback loops
         self._last_preview_frame: Optional[np.ndarray] = None
+        self._freeze_preview = False      # keep last scan frame after scan completes
 
         # Camera
         self._sim = CameraSimulator()
@@ -1979,6 +1980,8 @@ class MainWindow(QMainWindow):
         self.crop_cx_spin.setValue(cx_int)
 
     def _update_preview(self):
+        if self._freeze_preview:
+            return
         if self._mode != "scanning":
             img = self._sim.get_frame()
             self._last_preview_frame = img
@@ -2048,6 +2051,7 @@ class MainWindow(QMainWindow):
         self._thread.start()
 
         self._mode = "scanning"
+        self._freeze_preview = False
         self.scan_progress.setValue(0)
         self.phase_bar.reset()
         self.start_stop_btn.setText("▶  START SCAN")
@@ -2077,6 +2081,7 @@ class MainWindow(QMainWindow):
 
     def _scan_finished(self, ok: bool, msg: str):
         self._mode = "idle"
+        self._freeze_preview = ok   # keep last scan image; clear on failure/cancel
         self.start_stop_btn.setEnabled(True)
         self.cancel_scan_btn.setEnabled(False)
         self.recon_btn.setEnabled(True)
