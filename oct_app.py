@@ -183,6 +183,11 @@ QPushButton#stop_btn {{
 QPushButton#stop_btn:hover {{
     background-color: #441515;
 }}
+QPushButton#stop_btn:disabled {{
+    background-color: {PANEL_BG};
+    border: 1px solid #1e2229;
+    color: {TEXT_DIM};
+}}
 QProgressBar {{
     background-color: #0d0f12;
     border: 1px solid {BORDER_CLR};
