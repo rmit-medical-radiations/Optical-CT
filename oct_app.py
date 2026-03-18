@@ -2058,8 +2058,12 @@ class MainWindow(QMainWindow):
         self._freeze_preview = False
         self.scan_progress.setValue(0)
         self.phase_bar.reset()
-        self.start_stop_btn.setText("▶  START SCAN")
+        self.start_stop_btn.setText("⏳  SCAN IN PROGRESS")
         self.start_stop_btn.setEnabled(False)
+        self.start_stop_btn.setStyleSheet(
+            f"background:{PANEL_BG}; border:1px solid {BORDER_CLR};"
+            f"color:{TEXT_DIM}; font-size:13px; font-weight:bold; min-height:36px;"
+        )
         self.cancel_scan_btn.setEnabled(True)
         self.recon_btn.setEnabled(False)
         self._log(f"Starting scan: {name}")
@@ -2086,6 +2090,8 @@ class MainWindow(QMainWindow):
     def _scan_finished(self, ok: bool, msg: str):
         self._mode = "idle"
         self._freeze_preview = ok   # keep last scan image; clear on failure/cancel
+        self.start_stop_btn.setText("▶  START SCAN")
+        self.start_stop_btn.setStyleSheet("")   # restore stylesheet objectName style
         self.start_stop_btn.setEnabled(True)
         self.cancel_scan_btn.setEnabled(False)
         self.recon_btn.setEnabled(True)
