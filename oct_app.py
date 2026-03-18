@@ -2282,6 +2282,8 @@ class MainWindow(QMainWindow):
         self._mode = "idle"
         self.cancel_recon_btn.setEnabled(False)
         self.start_stop_btn.setEnabled(True)
+        if not ok:
+            self.recon_progress.setValue(0)
         self._on_scan_selected()   # re-enable recon btn if a valid scan is still selected
         self._log(f"{'✓' if ok else '✗'} {msg}")
         if not ok and "abort" not in msg.lower() and "cancel" not in msg.lower():
