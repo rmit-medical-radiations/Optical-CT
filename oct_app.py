@@ -213,6 +213,14 @@ QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
 }}
 QComboBox::drop-down {{
     border: none;
+    width: 20px;
+}}
+QComboBox::down-arrow {{
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 6px solid {TEXT_MAIN};
 }}
 QComboBox QAbstractItemView {{
     background-color: {PANEL_BG};
