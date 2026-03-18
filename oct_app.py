@@ -1408,7 +1408,7 @@ class ScanWorker(QObject):
                         self.log.emit(f"  Step {i+1}/{num_positions} — {angle}°")
                         serial_send(ser, f"MA {target_steps},1")
                         serial_wait_stopped(ser, dn_char=DEVICE_NAME)
-                        time.sleep(0.8)
+                        time.sleep(self.cfg["settle_ms"] / 1000.0)
                         img = capture(oct_stack)
                         if img is None:
                             self.finished.emit(False, f"Camera failed at step {i}")
@@ -1888,17 +1888,24 @@ class MainWindow(QMainWindow):
         self.calib_stack_spin.setRange(1, 20); self.calib_stack_spin.setValue(3)
         ctrl_grid.addWidget(self.calib_stack_spin, 3, 1)
 
+        ctrl_grid.addWidget(QLabel("Settle (ms):"), 4, 0)
+        self.settle_spin = QSpinBox()
+        self.settle_spin.setRange(100, 2000); self.settle_spin.setValue(800)
+        self.settle_spin.setSingleStep(100)
+        self.settle_spin.setToolTip("Wait after motor stops before capturing (reduce to speed up scan)")
+        ctrl_grid.addWidget(self.settle_spin, 4, 1)
+
         # Force new calibration
         self.force_dark_cb = QCheckBox("Force new dark")
         self.force_flat_cb = QCheckBox("Force new flat")
-        ctrl_grid.addWidget(self.force_dark_cb, 4, 0)
-        ctrl_grid.addWidget(self.force_flat_cb, 4, 1)
+        ctrl_grid.addWidget(self.force_dark_cb, 5, 0)
+        ctrl_grid.addWidget(self.force_flat_cb, 5, 1)
 
         # Scan mode
         self.post_only_cb = QCheckBox("Post-irradiation only (uniform background)")
         self.post_only_cb.setToolTip(
             "Skip pre-irradiation scan; reconstruct from A_post = −log(I_post / I₀) directly")
-        ctrl_grid.addWidget(self.post_only_cb, 5, 0, 1, 3)
+        ctrl_grid.addWidget(self.post_only_cb, 6, 0, 1, 3)
 
         # Hardware toggles
         self.real_camera_cb = QCheckBox("Real camera")
@@ -2157,6 +2164,7 @@ class MainWindow(QMainWindow):
             post_only      = self.post_only_cb.isChecked(),
             use_real_camera = self.real_camera_cb.isChecked(),
             use_real_serial = self.real_serial_cb.isChecked(),
+            settle_ms       = self.settle_spin.value(),
         )
 
         self._thread = QThread()
