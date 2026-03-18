@@ -1763,7 +1763,10 @@ class ExportDialog(QDialog):
         self._mount_sel(0)
 
     def _browse(self):
-        p = QFileDialog.getExistingDirectory(self, "Select destination")
+        p = QFileDialog.getExistingDirectory(
+            self, "Select destination", "",
+            QFileDialog.Option.DontUseNativeDialog
+        )
         if p:
             self._selected_dest = Path(p)
             self.dest_line.setText(str(p))
