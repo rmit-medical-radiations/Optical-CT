@@ -167,6 +167,11 @@ QPushButton#start_btn {{
 QPushButton#start_btn:hover {{
     background-color: #15443a;
 }}
+QPushButton#start_btn:disabled {{
+    background-color: {PANEL_BG};
+    border: 1px solid #1e2229;
+    color: {TEXT_DIM};
+}}
 QPushButton#stop_btn {{
     background-color: #2e1111;
     border: 1px solid {BTN_STOP};
