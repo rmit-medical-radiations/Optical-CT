@@ -432,48 +432,47 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
 
 def find_axis_from_nozzle(img: np.ndarray) -> Optional[float]:
     """
-    Estimate the axis-of-rotation X coordinate by detecting the circular
-    nozzle/sample-holder cross-section in the top portion of the image.
+    Estimate the axis-of-rotation X coordinate from a flat-field image.
 
-    Primary method: HoughCircles on the top 25 % of the image.
-    Fallback: centroid X of the largest dark region in the same strip
-    (the nozzle body is always the dominant dark object at the top).
+    The nozzle holder is mounted above the bright backlit background and casts
+    a dark vertical band over it.  The axis of rotation is the horizontal
+    centre of that band.
 
-    Returns the centre X in image pixels, or None on failure.
+    Method: take the top 20 % of the image (where the holder is visible),
+    exclude the outermost 15 % of columns on each side (frame borders), then
+    find the column with the lowest mean intensity after Gaussian smoothing.
+
+    Returns the centre X in image pixels, or None if the image is empty.
     """
     h, w = img.shape[:2]
-    top = img[:max(1, int(h * 0.25)), :]
-    top_u8 = cv2.normalize(top, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    blurred = cv2.GaussianBlur(top_u8, (11, 11), 3)
-
-    # ── Primary: Hough circle on the nozzle cross-section ─────────────────
-    circles = cv2.HoughCircles(
-        blurred, cv2.HOUGH_GRADIENT, dp=2,
-        minDist=w // 4,
-        param1=50, param2=20,
-        minRadius=w // 15,   # ~7 % of image width
-        maxRadius=w // 5,    # ~20 % of image width
-    )
-    if circles is not None:
-        cx = float(circles[0, 0, 0])
-        return cx
-
-    # ── Fallback: centroid of largest dark region ──────────────────────────
-    # Threshold: pixels darker than the 30th percentile are "dark"
-    thresh_val = int(np.percentile(top_u8, 30))
-    _, dark_mask = cv2.threshold(top_u8, thresh_val, 255, cv2.THRESH_BINARY_INV)
-    # Remove the very edges of the image (frame border) by eroding
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (w // 20, 1))
-    dark_mask = cv2.erode(dark_mask, kernel, iterations=1)
-    contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
+    if h == 0 or w == 0:
         return None
-    largest = max(contours, key=cv2.contourArea)
-    M = cv2.moments(largest)
-    if M["m00"] == 0:
+
+    # Strip containing the nozzle holder
+    top_h = max(1, int(h * 0.20))
+    top = img[:top_h, :].astype(np.float32)
+
+    # Exclude dark frame borders (leftmost / rightmost 15 % of columns)
+    border = max(1, int(w * 0.15))
+    inner = top[:, border: w - border]   # shape: (top_h, inner_w)
+    if inner.shape[1] == 0:
         return None
-    return M["m10"] / M["m00"]
+
+    # Per-column mean intensity — nozzle holder → darkest vertical band
+    col_means = inner.mean(axis=0)
+
+    # Smooth with a narrow Gaussian to suppress noise
+    sigma = max(3.0, w * 0.01)
+    ks = int(sigma * 6) | 1          # odd kernel size
+    half = ks // 2
+    xs = np.arange(ks, dtype=np.float32) - half
+    kernel = np.exp(-0.5 * (xs / sigma) ** 2)
+    kernel /= kernel.sum()
+    smoothed = np.convolve(col_means, kernel, mode='same')
+
+    # The darkest column is the nozzle axis (offset back by excluded border)
+    darkest_local = int(np.argmin(smoothed))
+    return float(darkest_local + border)
 
 
 def ema(values, alpha=0.1):
@@ -1972,7 +1971,7 @@ class MainWindow(QMainWindow):
         img = np.load(flat_path)
         cx = find_axis_from_nozzle(img)
         if cx is None:
-            self._log("⚠ Axis detection failed — no vertical edges found in nozzle region.")
+            self._log("⚠ Axis detection failed — could not locate nozzle in top of image.")
             return
         cx_int = int(round(cx))
         self._log(f"✓ Axis detected at x={cx_int} px")
