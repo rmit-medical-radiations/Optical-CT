@@ -435,30 +435,45 @@ def find_axis_from_nozzle(img: np.ndarray) -> Optional[float]:
     Estimate the axis-of-rotation X coordinate by detecting the circular
     nozzle/sample-holder cross-section in the top portion of the image.
 
-    The nozzle is the most reliable fixed feature: its centre IS the axis
-    of rotation regardless of sample geometry.  HoughCircles locates it
-    directly.  Returns the centre X in image pixels, or None on failure.
+    Primary method: HoughCircles on the top 25 % of the image.
+    Fallback: centroid X of the largest dark region in the same strip
+    (the nozzle body is always the dominant dark object at the top).
+
+    Returns the centre X in image pixels, or None on failure.
     """
     h, w = img.shape[:2]
-    # Only look at the top 20 % of the image where the nozzle is visible
-    top = img[:max(1, int(h * 0.20)), :]
+    top = img[:max(1, int(h * 0.25)), :]
     top_u8 = cv2.normalize(top, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    blurred = cv2.GaussianBlur(top_u8, (9, 9), 2)
+    blurred = cv2.GaussianBlur(top_u8, (11, 11), 3)
 
-    # Detect the circular nozzle cross-section
+    # ── Primary: Hough circle on the nozzle cross-section ─────────────────
     circles = cv2.HoughCircles(
-        blurred, cv2.HOUGH_GRADIENT, dp=1,
+        blurred, cv2.HOUGH_GRADIENT, dp=2,
         minDist=w // 4,
-        param1=50, param2=30,
-        minRadius=w // 20,   # ~5 % of image width
-        maxRadius=w // 6,    # ~17 % of image width
+        param1=50, param2=20,
+        minRadius=w // 15,   # ~7 % of image width
+        maxRadius=w // 5,    # ~20 % of image width
     )
     if circles is not None:
-        # OpenCV returns circles sorted by accumulator strength; take the best
         cx = float(circles[0, 0, 0])
         return cx
 
-    return None
+    # ── Fallback: centroid of largest dark region ──────────────────────────
+    # Threshold: pixels darker than the 30th percentile are "dark"
+    thresh_val = int(np.percentile(top_u8, 30))
+    _, dark_mask = cv2.threshold(top_u8, thresh_val, 255, cv2.THRESH_BINARY_INV)
+    # Remove the very edges of the image (frame border) by eroding
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (w // 20, 1))
+    dark_mask = cv2.erode(dark_mask, kernel, iterations=1)
+    contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    largest = max(contours, key=cv2.contourArea)
+    M = cv2.moments(largest)
+    if M["m00"] == 0:
+        return None
+    return M["m10"] / M["m00"]
 
 
 def ema(values, alpha=0.1):
