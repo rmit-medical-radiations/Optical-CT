@@ -1912,13 +1912,13 @@ class MainWindow(QMainWindow):
         self.real_serial_cb = QCheckBox("Real stepper")
         self.real_camera_cb.setChecked(True)
         self.real_serial_cb.setChecked(True)
-        ctrl_grid.addWidget(self.real_camera_cb, 6, 0)
-        ctrl_grid.addWidget(self.real_serial_cb, 6, 1)
+        ctrl_grid.addWidget(self.real_camera_cb, 7, 0)
+        ctrl_grid.addWidget(self.real_serial_cb, 7, 1)
 
         # Scan progress
-        ctrl_grid.addWidget(QLabel("Scan progress:"), 7, 0)
+        ctrl_grid.addWidget(QLabel("Scan progress:"), 8, 0)
         self.scan_progress = QProgressBar()
-        ctrl_grid.addWidget(self.scan_progress, 7, 1, 1, 2)
+        ctrl_grid.addWidget(self.scan_progress, 8, 1, 1, 2)
 
         # Start / Cancel row
         btn_row = QHBoxLayout()
@@ -1931,17 +1931,17 @@ class MainWindow(QMainWindow):
         self.cancel_scan_btn.setEnabled(False)
         btn_row.addWidget(self.start_stop_btn, 3)
         btn_row.addWidget(self.cancel_scan_btn, 1)
-        ctrl_grid.addLayout(btn_row, 8, 0, 1, 3)
+        ctrl_grid.addLayout(btn_row, 9, 0, 1, 3)
 
         # Phase buttons — sub-steps that unlock once START SCAN is clicked
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setFrameShadow(QFrame.Shadow.Sunken)
-        ctrl_grid.addWidget(sep, 9, 0, 1, 3)
+        ctrl_grid.addWidget(sep, 10, 0, 1, 3)
 
         steps_lbl = QLabel("Scan steps:")
         steps_lbl.setObjectName("dim")
-        ctrl_grid.addWidget(steps_lbl, 10, 0, 1, 3)
+        ctrl_grid.addWidget(steps_lbl, 11, 0, 1, 3)
 
         self.phase_bar = PhaseButtonBar()
         phase_container = QWidget()
@@ -1950,7 +1950,7 @@ class MainWindow(QMainWindow):
         pc_layout.setContentsMargins(16, 0, 0, 0)
         pc_layout.setSpacing(0)
         pc_layout.addWidget(self.phase_bar)
-        ctrl_grid.addWidget(phase_container, 11, 0, 1, 3)
+        ctrl_grid.addWidget(phase_container, 12, 0, 1, 3)
 
         left.addWidget(ctrl_box, 2)
         root.addLayout(left, 5)
