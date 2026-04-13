@@ -84,7 +84,7 @@ _ARROW_SVG_PATH.write_text(
 )
 
 CAMERA_URL      = "http://192.168.7.2:8000"
-SERIAL_PORT     = "/dev/ttyUSB0"
+SERIAL_PORT     = "/dev/tty.usbserial-A9TKD8CR"     # stepper motor
 BAUDRATE        = 9600
 SERIAL_TIMEOUT  = 1
 
