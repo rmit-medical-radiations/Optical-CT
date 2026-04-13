@@ -423,16 +423,28 @@ def line_integrals(imgs, dark, flat, eps=1e-6):
 def recon_volume_fbp(P, angles_deg, filter_name="hann", circle=True,
                      output_size=None, progress_cb=None):
     from skimage.transform import iradon
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     A, H, W = P.shape
     if output_size is None:
         output_size = W
     vol = np.zeros((H, output_size, output_size), dtype=np.float32)
-    for y in range(H):
+
+    def recon_slice(y):
         sino = P[:, y, :].T
-        vol[y] = iradon(sino, theta=angles_deg, filter_name=filter_name,
-                        circle=circle, output_size=output_size).astype(np.float32)
-        if progress_cb and y % max(1, H // 50) == 0:
-            progress_cb(int(100 * y / H))
+        return y, iradon(sino, theta=angles_deg, filter_name=filter_name,
+                         circle=circle, output_size=output_size).astype(np.float32)
+
+    n_workers = os.cpu_count() or 1
+    completed = 0
+    report_every = max(1, H // 50)
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = {executor.submit(recon_slice, y): y for y in range(H)}
+        for future in as_completed(futures):
+            y, result = future.result()
+            vol[y] = result
+            completed += 1
+            if progress_cb and completed % report_every == 0:
+                progress_cb(int(100 * completed / H))
     return vol
 
 def crop_window(imgs, dark, flat, cx, top, extent):
