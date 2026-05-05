@@ -32,12 +32,14 @@ import json
 import time
 import math
 import shutil
+import socket
 import string
 import glob
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple, List
+from urllib.parse import urlparse as _urlparse
 
 import numpy as np
 import cv2
@@ -84,6 +86,10 @@ _ARROW_SVG_PATH.write_text(
 )
 
 CAMERA_URL      = "http://192.168.7.2:8000"
+_cam            = _urlparse(CAMERA_URL)
+CAMERA_HOST     = _cam.hostname
+CAMERA_PORT     = _cam.port or 80
+PING_INTERVAL_MS = 20_000   # keep USB-ethernet alive; check camera reachability
 SERIAL_PORT     = "/dev/tty.usbserial-A9TKD8CR"     # stepper motor
 BAUDRATE        = 9600
 SERIAL_TIMEOUT  = 1
@@ -329,6 +335,23 @@ def take_photo_http(stack: int = 3) -> Optional[np.ndarray]:
         return cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
     except Exception:
         return None
+
+
+def probe_camera() -> bool:
+    """Return True if the RPi camera server is reachable (TCP connect only)."""
+    try:
+        with socket.create_connection((CAMERA_HOST, CAMERA_PORT), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+class CameraProbeWorker(QObject):
+    """Lightweight keep-alive: opens a TCP connection to the RPi, reports reachability."""
+    result = pyqtSignal(bool)
+
+    def run(self):
+        self.result.emit(probe_camera())
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1253,8 +1276,8 @@ class ScanWorker(QObject):
             if use_real_camera:
                 img = take_photo_http(stack)
                 if img is None:
-                    self.log.emit("⚠ Camera HTTP failed — using simulator")
-                    img = sim.get_frame(stack)
+                    self.log.emit("✗ Camera unreachable — image capture failed")
+                    return None
             else:
                 img = sim.get_frame(stack)
             return img
@@ -1393,8 +1416,8 @@ class ScanWorker(QObject):
             if self.cfg["use_real_camera"]:
                 img = take_photo_http(stack)
                 if img is None:
-                    self.log.emit("⚠ Camera HTTP failed — using simulator")
-                    img = sim.get_frame(stack)
+                    self.log.emit("✗ Camera unreachable — image capture failed")
+                    return None
             else:
                 img = sim.get_frame(stack)
             return img
@@ -1442,7 +1465,8 @@ class ScanWorker(QObject):
                 time.sleep(0.05)
                 img = capture(oct_stack)
                 if img is None:
-                    continue
+                    self.finished.emit(False, f"Camera failed at step {i+1}/{num_positions}")
+                    return False
                 self._save_image(img, i, angle, image_dir, map1, map2)
                 self.image_ready.emit(img.copy())
                 pct = int((progress_offset + progress_scale * (i+1) / num_positions) * 100)
@@ -1839,6 +1863,13 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(STYLESHEET)
         self._auto_detect_axis()   # populate crop centre X from flat field if available
 
+        # Keep USB-ethernet alive and track camera reachability
+        self._probe_thread: Optional[QThread] = None
+        self._ping_timer = QTimer(self)
+        self._ping_timer.timeout.connect(self._probe_camera)
+        self._ping_timer.start(PING_INTERVAL_MS)
+        self._probe_camera()   # immediate first check
+
     # ── UI construction ──────────────────────────────────────────────────────
 
     def _build_ui(self):
@@ -1863,6 +1894,9 @@ class MainWindow(QMainWindow):
         self.roi_label = QLabel("ROI: cx=995  top=270  extent=700")
         self.roi_label.setObjectName("dim")
         pl.addWidget(self.roi_label)
+        self._cam_status_lbl = QLabel("● Camera: checking…")
+        self._cam_status_lbl.setObjectName("dim")
+        pl.addWidget(self._cam_status_lbl)
         left.addWidget(preview_box, 3)
 
         # Scan controls
@@ -2084,6 +2118,7 @@ class MainWindow(QMainWindow):
         self.scan_selector.currentIndexChanged.connect(self._on_scan_selected)
         self.scan_mode_combo.currentIndexChanged.connect(self._on_scan_mode_changed)
         self.pre_scan_refresh_btn.clicked.connect(self._populate_pre_scan_combo)
+        self.real_camera_cb.stateChanged.connect(lambda _: self._probe_camera())
         self._populate_scan_selector()
         self._populate_pre_scan_combo()
 
@@ -2144,6 +2179,28 @@ class MainWindow(QMainWindow):
         if self._worker and hasattr(self._worker, 'proceed'):
             self._worker.proceed()
 
+    # ── Camera keep-alive / status ────────────────────────────────────────────
+
+    def _probe_camera(self):
+        """Fire a non-blocking TCP probe; reuses the thread slot so at most one runs."""
+        if self._probe_thread and self._probe_thread.isRunning():
+            return
+        self._probe_thread = QThread()
+        worker = CameraProbeWorker()
+        worker.moveToThread(self._probe_thread)
+        self._probe_thread.started.connect(worker.run)
+        worker.result.connect(self._on_camera_probe)
+        worker.result.connect(self._probe_thread.quit)
+        self._probe_thread.start()
+
+    def _on_camera_probe(self, reachable: bool):
+        if reachable:
+            self._cam_status_lbl.setText(f"● Camera: online  ({CAMERA_URL})")
+            self._cam_status_lbl.setStyleSheet(f"color:{ACCENT}; font-size:11px;")
+        else:
+            self._cam_status_lbl.setText(f"● Camera: offline  ({CAMERA_URL})")
+            self._cam_status_lbl.setStyleSheet(f"color:{BTN_STOP}; font-size:11px;")
+
     # ── Preview update ────────────────────────────────────────────────────────
 
     def _auto_detect_axis(self):
@@ -2193,6 +2250,15 @@ class MainWindow(QMainWindow):
     def _toggle_scan(self):
         if self._mode != "idle":
             return  # shouldn't happen; button is disabled while scanning
+
+        if self.real_camera_cb.isChecked() and not probe_camera():
+            QMessageBox.warning(
+                self, "Camera unreachable",
+                f"Cannot connect to camera at {CAMERA_URL}.\n\n"
+                "Check the USB cable and the camera server on the RPi Zero.\n"
+                "Uncheck 'Real camera' to run in simulator mode."
+            )
+            return
 
         scan_mode = self.scan_mode_combo.currentData()  # "pre" or "post"
 
