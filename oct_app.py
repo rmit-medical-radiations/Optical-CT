@@ -67,7 +67,8 @@ from matplotlib.figure import Figure
 # Paths / constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-APP_TITLE = "Optical CT Scanner"
+APP_TITLE   = "Optical CT Scanner"
+APP_VERSION = "1.0.0"
 
 HOME = Path.home()
 BASE_DIR    = HOME / "OCT"
@@ -2098,6 +2099,11 @@ class MainWindow(QMainWindow):
         self.log_view.setFixedHeight(120)
         ll.addWidget(self.log_view)
         right.addWidget(log_box)
+
+        ver_lbl = QLabel(f"v{APP_VERSION}")
+        ver_lbl.setObjectName("dim")
+        ver_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+        right.addWidget(ver_lbl)
 
         root.addLayout(right, 4)
 
