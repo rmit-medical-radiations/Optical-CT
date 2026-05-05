@@ -1094,7 +1094,7 @@ class PhaseButtonBar(QWidget):
         "Turn lamp OFF and remove sample",
         "Turn lamp ON with no sample",
         "Place sample, lamp ON — begin pre-irradiation rotation",
-        "Remove sample, irradiate, replace sample, lamp ON — begin post-irradiation rotation",
+        "Place irradiated sample, lamp ON — begin post-irradiation rotation",
     ]
 
     def __init__(self, parent=None):
@@ -1243,7 +1243,7 @@ class ScanWorker(QObject):
         flat_stack       = cfg["flat_stack"]
         force_dark       = cfg["force_dark"]
         force_flat       = cfg["force_flat"]
-        post_only        = cfg["post_only"]
+        scan_mode        = cfg["scan_mode"]   # "pre" or "post"
         use_real_camera  = cfg["use_real_camera"]
         use_real_serial  = cfg["use_real_serial"]
 
@@ -1312,11 +1312,13 @@ class ScanWorker(QObject):
 
             num_positions = int(360 / degree_increment)
 
-            # ── Phase 2: Pre-irradiation scan (skipped in post-only mode) ────────
-            if post_only:
+            # ── Phase 2: Pre-irradiation scan ────────────────────────────────
+            if scan_mode == "post":
+                # Pre images already exist from an earlier session — skip this phase
                 self.phase_skipped.emit(2)
-                self.log.emit("Post-only mode — pre-irradiation scan skipped")
+                self.log.emit("Post session — using saved pre-irradiation images")
             else:
+                # scan_mode == "pre"
                 self.log.emit("Waiting: place sample, lamp ON — click ③ to begin pre-irradiation scan")
                 if not self._wait_for_user(2):
                     self.finished.emit(False, "Aborted"); return
@@ -1326,30 +1328,29 @@ class ScanWorker(QObject):
                 lamp_on()
                 ok = self._run_rotation(num_positions, degree_increment, oct_stack,
                                         pre_dir, map1, map2, use_real_serial,
-                                        progress_offset=0, progress_scale=0.5)
+                                        progress_offset=0, progress_scale=1.0)
                 if not ok:
                     return
                 self.phase_done.emit(2)
+                lamp_off()
                 if self._abort:
                     self.finished.emit(False, "Scan aborted by user"); return
+                self.log.emit("✓ Pre-irradiation scan complete — irradiate the dosimeter, "
+                              "then return for the post-irradiation session")
+                self.finished.emit(True, "Pre-scan complete — ready for irradiation")
+                return
 
             # ── Phase 3: Post-irradiation scan ────────────────────────────────
-            if not post_only:
-                lamp_off()
-                self.log.emit("Remove sample, irradiate, replace, lamp ON — then click ④")
-            else:
-                self.log.emit("Place irradiated sample, lamp ON — then click ④")
+            self.log.emit("Waiting: place irradiated sample, lamp ON — then click ④")
             if not self._wait_for_user(3):
                 self.finished.emit(False, "Aborted"); return
 
             self.phase_running.emit(3)
             self.log.emit("Post-irradiation scan…")
             lamp_on()
-            post_offset = 0.0 if post_only else 0.5
-            post_scale  = 1.0 if post_only else 0.5
             ok = self._run_rotation(num_positions, degree_increment, oct_stack,
                                     post_dir, map1, map2, use_real_serial,
-                                    progress_offset=post_offset, progress_scale=post_scale)
+                                    progress_offset=0, progress_scale=0.8)
             if not ok:
                 return
             self.phase_done.emit(3)
@@ -1358,18 +1359,14 @@ class ScanWorker(QObject):
             if self._abort:
                 self.finished.emit(False, "Scan aborted by user"); return
 
-            # ── Subtraction / absorbance projection ───────────────────────────
-            if post_only:
-                self.log.emit("Computing A_post = −log(I_post / I₀) projections…")
-            else:
-                self.log.emit("Computing ΔA = A_post − A_pre projections…")
+            # ── Subtraction in OD domain: ΔA = A_post − A_pre ───────────────
+            self.log.emit("Computing ΔA = A_post − A_pre projections (OD domain)…")
             self.scan_progress.emit(0)
-            self._compute_subtracted(pre_dir, post_dir, subtracted_dir, flat, map1, map2,
-                                     post_only=post_only,
+            self._compute_subtracted(pre_dir, post_dir, subtracted_dir, flat,
                                      progress_cb=self.scan_progress.emit)
-            self.log.emit(f"✓ Projections saved to {subtracted_dir}")
+            self.log.emit(f"✓ ΔA projections saved to {subtracted_dir}")
 
-            self.finished.emit(True, "Scan complete")
+            self.finished.emit(True, "Post-scan and subtraction complete")
 
         except Exception as e:
             lamp_off()
@@ -1454,46 +1451,34 @@ class ScanWorker(QObject):
         return True
 
     def _compute_subtracted(self, pre_dir: Path, post_dir: Path, subtracted_dir: Path,
-                             flat: np.ndarray, map1, map2, post_only: bool = False,
-                             progress_cb=None):
+                             flat: np.ndarray, progress_cb=None):
         """
-        Convert projections to absorbance and save to subtracted_dir as uint16 PNG.
+        Compute ΔA = A_post − A_pre in the OD domain and save as uint16 PNG.
 
-        Standard mode:  ΔA = A_post − A_pre  (A = −log(I / I₀))
-        Post-only mode: P  = A_post           (uniform background assumption)
+        A = −log(I / I₀) where I₀ is the flat-field image.
+        ΔA is clipped to [0, ∞) and encoded with OD_SCALE.
 
-        Output is clipped to [0, ∞) and encoded with OD_SCALE so reconstruction
-        can decode directly without re-applying line_integrals.
+        Note: the flat field cancels in the subtraction (ΔA = log(I_pre/I_post)),
+        so the result is independent of flat-field drift between sessions.
         """
-        flat_f     = np.clip(flat.astype(np.float32), 1e-6, None)
+        flat_f    = np.clip(flat.astype(np.float32), 1e-6, None)
+        pre_files = sorted(pre_dir.glob("*.png"))
         post_files = sorted(post_dir.glob("*.png"))
-
-        if post_only:
-            n = len(post_files)
-            for i, qf in enumerate(post_files):
-                post_img = cv2.imread(str(qf), cv2.IMREAD_GRAYSCALE).astype(np.float32)
-                A_post   = -np.log(np.clip(post_img, 1e-6, None) / flat_f)
-                out = np.clip(A_post * OD_SCALE, 0, 65535).astype(np.uint16)
-                cv2.imwrite(str(subtracted_dir / qf.name), out)
-                if progress_cb and n:
-                    progress_cb(int((i + 1) / n * 100))
-        else:
-            pre_files = sorted(pre_dir.glob("*.png"))
-            if len(pre_files) != len(post_files):
-                self.log.emit(f"⚠ pre/post image count mismatch "
-                              f"({len(pre_files)} vs {len(post_files)}) — "
-                              f"using first {min(len(pre_files), len(post_files))} pairs")
-            n = min(len(pre_files), len(post_files))
-            for i, (pf, qf) in enumerate(zip(pre_files[:n], post_files[:n])):
-                pre_img  = cv2.imread(str(pf), cv2.IMREAD_GRAYSCALE).astype(np.float32)
-                post_img = cv2.imread(str(qf), cv2.IMREAD_GRAYSCALE).astype(np.float32)
-                A_pre    = -np.log(np.clip(pre_img,  1e-6, None) / flat_f)
-                A_post   = -np.log(np.clip(post_img, 1e-6, None) / flat_f)
-                delta_A  = np.clip(A_post - A_pre, 0.0, None)
-                out = np.clip(delta_A * OD_SCALE, 0, 65535).astype(np.uint16)
-                cv2.imwrite(str(subtracted_dir / pf.name), out)
-                if progress_cb and n:
-                    progress_cb(int((i + 1) / n * 100))
+        if len(pre_files) != len(post_files):
+            self.log.emit(f"⚠ pre/post image count mismatch "
+                          f"({len(pre_files)} vs {len(post_files)}) — "
+                          f"using first {min(len(pre_files), len(post_files))} pairs")
+        n = min(len(pre_files), len(post_files))
+        for i, (pf, qf) in enumerate(zip(pre_files[:n], post_files[:n])):
+            pre_img  = cv2.imread(str(pf),  cv2.IMREAD_GRAYSCALE).astype(np.float32)
+            post_img = cv2.imread(str(qf), cv2.IMREAD_GRAYSCALE).astype(np.float32)
+            A_pre  = -np.log(np.clip(pre_img,  1e-6, None) / flat_f)
+            A_post = -np.log(np.clip(post_img, 1e-6, None) / flat_f)
+            delta_A = np.clip(A_post - A_pre, 0.0, None)
+            out = np.clip(delta_A * OD_SCALE, 0, 65535).astype(np.uint16)
+            cv2.imwrite(str(subtracted_dir / pf.name), out)
+            if progress_cb and n:
+                progress_cb(int((i + 1) / n * 100))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1886,63 +1871,83 @@ class MainWindow(QMainWindow):
         ctrl_grid.setColumnStretch(1, 1)
         ctrl_grid.setSpacing(6)
 
-        # Scan name
-        ctrl_grid.addWidget(QLabel("Scan name:"), 0, 0)
-        self.scan_name_edit = QLineEdit(time.strftime("scan_%Y%m%d_%H%M%S"))
-        ctrl_grid.addWidget(self.scan_name_edit, 0, 1, 1, 2)
+        # Session type (row 0)
+        ctrl_grid.addWidget(QLabel("Session:"), 0, 0)
+        self.scan_mode_combo = QComboBox()
+        self.scan_mode_combo.addItem("Pre-irradiation scan", "pre")
+        self.scan_mode_combo.addItem("Post-irradiation scan", "post")
+        ctrl_grid.addWidget(self.scan_mode_combo, 0, 1, 1, 2)
 
-        # Step increment
-        ctrl_grid.addWidget(QLabel("Step (deg):"), 1, 0)
+        # Scan name — shown in pre mode (row 1)
+        self.scan_name_lbl = QLabel("Scan name:")
+        ctrl_grid.addWidget(self.scan_name_lbl, 1, 0)
+        self.scan_name_edit = QLineEdit(time.strftime("scan_%Y%m%d_%H%M%S"))
+        ctrl_grid.addWidget(self.scan_name_edit, 1, 1, 1, 2)
+
+        # Pre scan selector — shown in post mode (row 1, same slot, toggled)
+        self.pre_scan_lbl = QLabel("Pre scan:")
+        ctrl_grid.addWidget(self.pre_scan_lbl, 2, 0)
+        pre_scan_row = QWidget()
+        pre_scan_rl = QHBoxLayout(pre_scan_row)
+        pre_scan_rl.setContentsMargins(0, 0, 0, 0)
+        self.pre_scan_combo = QComboBox()
+        self.pre_scan_refresh_btn = QPushButton("⟳")
+        self.pre_scan_refresh_btn.setFixedWidth(32)
+        self.pre_scan_refresh_btn.setToolTip("Refresh pre-scan list")
+        pre_scan_rl.addWidget(self.pre_scan_combo, 1)
+        pre_scan_rl.addWidget(self.pre_scan_refresh_btn)
+        ctrl_grid.addWidget(pre_scan_row, 2, 1, 1, 2)
+        # Row 2 hidden until post mode is selected
+        self.pre_scan_lbl.setVisible(False)
+        pre_scan_row.setVisible(False)
+        self._pre_scan_row_widget = pre_scan_row
+
+        # Step increment (row 3)
+        ctrl_grid.addWidget(QLabel("Step (deg):"), 3, 0)
         self.step_spin = QSpinBox()
         self.step_spin.setRange(1, 30); self.step_spin.setValue(2)
-        ctrl_grid.addWidget(self.step_spin, 1, 1)
+        ctrl_grid.addWidget(self.step_spin, 3, 1)
 
-        # Stacks
-        ctrl_grid.addWidget(QLabel("Oct stack:"), 2, 0)
+        # Stacks (rows 4-5)
+        ctrl_grid.addWidget(QLabel("Oct stack:"), 4, 0)
         self.oct_stack_spin = QSpinBox()
         self.oct_stack_spin.setRange(1, 20); self.oct_stack_spin.setValue(3)
-        ctrl_grid.addWidget(self.oct_stack_spin, 2, 1)
+        ctrl_grid.addWidget(self.oct_stack_spin, 4, 1)
 
-        ctrl_grid.addWidget(QLabel("Dark/flat stack:"), 3, 0)
+        ctrl_grid.addWidget(QLabel("Dark/flat stack:"), 5, 0)
         self.calib_stack_spin = QSpinBox()
         self.calib_stack_spin.setRange(1, 20); self.calib_stack_spin.setValue(3)
-        ctrl_grid.addWidget(self.calib_stack_spin, 3, 1)
+        ctrl_grid.addWidget(self.calib_stack_spin, 5, 1)
 
-        ctrl_grid.addWidget(QLabel("Settle (ms):"), 4, 0)
+        ctrl_grid.addWidget(QLabel("Settle (ms):"), 6, 0)
         self.settle_spin = QSpinBox()
         self.settle_spin.setRange(100, 2000); self.settle_spin.setValue(300)
         self.settle_spin.setSingleStep(100)
         self.settle_spin.setToolTip("Wait after motor stops before capturing (reduce to speed up scan)")
-        ctrl_grid.addWidget(self.settle_spin, 4, 1)
+        ctrl_grid.addWidget(self.settle_spin, 6, 1)
 
-        # Force new calibration
+        # Force new calibration (row 7)
         self.force_dark_cb = QCheckBox("Force new dark")
         self.force_flat_cb = QCheckBox("Force new flat")
-        ctrl_grid.addWidget(self.force_dark_cb, 5, 0)
-        ctrl_grid.addWidget(self.force_flat_cb, 5, 1)
+        ctrl_grid.addWidget(self.force_dark_cb, 7, 0)
+        ctrl_grid.addWidget(self.force_flat_cb, 7, 1)
 
-        # Scan mode
-        self.post_only_cb = QCheckBox("Post-irradiation only (uniform background)")
-        self.post_only_cb.setToolTip(
-            "Skip pre-irradiation scan; reconstruct from A_post = −log(I_post / I₀) directly")
-        ctrl_grid.addWidget(self.post_only_cb, 6, 0, 1, 3)
-
-        # Hardware toggles
+        # Hardware toggles (row 8)
         self.real_camera_cb = QCheckBox("Real camera")
         self.real_serial_cb = QCheckBox("Real stepper")
         self.real_camera_cb.setChecked(True)
         self.real_serial_cb.setChecked(True)
-        ctrl_grid.addWidget(self.real_camera_cb, 7, 0)
-        ctrl_grid.addWidget(self.real_serial_cb, 7, 1)
+        ctrl_grid.addWidget(self.real_camera_cb, 8, 0)
+        ctrl_grid.addWidget(self.real_serial_cb, 8, 1)
 
-        # Scan progress
-        ctrl_grid.addWidget(QLabel("Scan progress:"), 8, 0)
+        # Scan progress (row 9)
+        ctrl_grid.addWidget(QLabel("Scan progress:"), 9, 0)
         self.scan_progress = QProgressBar()
-        ctrl_grid.addWidget(self.scan_progress, 8, 1, 1, 2)
+        ctrl_grid.addWidget(self.scan_progress, 9, 1, 1, 2)
 
-        # Start / Cancel row
+        # Start / Cancel row (row 10)
         btn_row = QHBoxLayout()
-        self.start_stop_btn = QPushButton("▶  START SCAN")
+        self.start_stop_btn = QPushButton("▶  CAPTURE PRE SCAN")
         self.start_stop_btn.setObjectName("start_btn")
         self.start_stop_btn.setMinimumHeight(42)
         self.cancel_scan_btn = QPushButton("✕  CANCEL")
@@ -1951,17 +1956,17 @@ class MainWindow(QMainWindow):
         self.cancel_scan_btn.setEnabled(False)
         btn_row.addWidget(self.start_stop_btn, 3)
         btn_row.addWidget(self.cancel_scan_btn, 1)
-        ctrl_grid.addLayout(btn_row, 9, 0, 1, 3)
+        ctrl_grid.addLayout(btn_row, 10, 0, 1, 3)
 
-        # Phase buttons — sub-steps that unlock once START SCAN is clicked
+        # Phase buttons — sub-steps that unlock once scan is started (rows 11-13)
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setFrameShadow(QFrame.Shadow.Sunken)
-        ctrl_grid.addWidget(sep, 10, 0, 1, 3)
+        ctrl_grid.addWidget(sep, 11, 0, 1, 3)
 
         steps_lbl = QLabel("Scan steps:")
         steps_lbl.setObjectName("dim")
-        ctrl_grid.addWidget(steps_lbl, 11, 0, 1, 3)
+        ctrl_grid.addWidget(steps_lbl, 12, 0, 1, 3)
 
         self.phase_bar = PhaseButtonBar()
         phase_container = QWidget()
@@ -1970,7 +1975,7 @@ class MainWindow(QMainWindow):
         pc_layout.setContentsMargins(16, 0, 0, 0)
         pc_layout.setSpacing(0)
         pc_layout.addWidget(self.phase_bar)
-        ctrl_grid.addWidget(phase_container, 12, 0, 1, 3)
+        ctrl_grid.addWidget(phase_container, 13, 0, 1, 3)
 
         left.addWidget(ctrl_box, 2)
         root.addLayout(left, 5)
@@ -2077,7 +2082,10 @@ class MainWindow(QMainWindow):
         self.phase_bar.phase_requested.connect(self._on_phase_requested)
         self.auto_axis_btn.clicked.connect(self._auto_detect_axis)
         self.scan_selector.currentIndexChanged.connect(self._on_scan_selected)
+        self.scan_mode_combo.currentIndexChanged.connect(self._on_scan_mode_changed)
+        self.pre_scan_refresh_btn.clicked.connect(self._populate_pre_scan_combo)
         self._populate_scan_selector()
+        self._populate_pre_scan_combo()
 
         # Spinbox → overlay (crop)
         for spin in (self.crop_cx_spin, self.crop_top_spin, self.crop_extent_spin):
@@ -2086,6 +2094,33 @@ class MainWindow(QMainWindow):
         # Spinbox → overlay (sample)
         for spin in (self.sample_top_spin, self.sample_h_spin):
             spin.valueChanged.connect(self._on_sample_spinbox_changed)
+
+    def _on_scan_mode_changed(self):
+        mode = self.scan_mode_combo.currentData()
+        is_pre = (mode == "pre")
+        self.scan_name_lbl.setVisible(is_pre)
+        self.scan_name_edit.setVisible(is_pre)
+        self.pre_scan_lbl.setVisible(not is_pre)
+        self._pre_scan_row_widget.setVisible(not is_pre)
+        if is_pre:
+            self.start_stop_btn.setText("▶  CAPTURE PRE SCAN")
+        else:
+            self.start_stop_btn.setText("▶  CAPTURE POST SCAN")
+
+    def _populate_pre_scan_combo(self):
+        """List scan folders that have at least one PNG in their pre/ subdirectory."""
+        self.pre_scan_combo.blockSignals(True)
+        self.pre_scan_combo.clear()
+        if SCANS_DIR.exists():
+            scans = sorted(
+                [p for p in SCANS_DIR.iterdir()
+                 if p.is_dir() and (p / "pre").is_dir()
+                 and list((p / "pre").glob("*.png"))],
+                reverse=True
+            )
+            for p in scans:
+                self.pre_scan_combo.addItem(p.name, userData=p)
+        self.pre_scan_combo.blockSignals(False)
 
     def _on_crop_spinbox_changed(self):
         if self._updating_overlays:
@@ -2159,18 +2194,41 @@ class MainWindow(QMainWindow):
         if self._mode != "idle":
             return  # shouldn't happen; button is disabled while scanning
 
-        name = self.scan_name_edit.text().strip() or time.strftime("scan_%Y%m%d_%H%M%S")
+        scan_mode = self.scan_mode_combo.currentData()  # "pre" or "post"
+
+        if scan_mode == "pre":
+            name = self.scan_name_edit.text().strip() or time.strftime("scan_%Y%m%d_%H%M%S")
+            self._scan_dir = SCANS_DIR / name
+            pre_dir        = self._scan_dir / "pre"
+            post_dir       = self._scan_dir / "post"
+            subtracted_dir = self._scan_dir / "subtracted"
+            # Clear only pre/ — post/ and subtracted/ are untouched (may not exist yet)
+            if pre_dir.exists():
+                shutil.rmtree(pre_dir)
+            pre_dir.mkdir(parents=True)
+        else:  # "post"
+            pre_scan_dir = self.pre_scan_combo.currentData()
+            if pre_scan_dir is None:
+                QMessageBox.warning(self, "Post scan", "No pre-irradiation scan available. Run a pre scan first.")
+                return
+            self._scan_dir = pre_scan_dir
+            name           = pre_scan_dir.name
+            pre_dir        = self._scan_dir / "pre"
+            post_dir       = self._scan_dir / "post"
+            subtracted_dir = self._scan_dir / "subtracted"
+            if not pre_dir.is_dir() or not list(pre_dir.glob("*.png")):
+                QMessageBox.warning(self, "Post scan", f"No pre-scan images found in:\n{pre_dir}")
+                return
+            # Clear post/ and subtracted/ — pre/ is kept
+            for d in (post_dir, subtracted_dir):
+                if d.exists():
+                    shutil.rmtree(d)
+                d.mkdir(parents=True)
+
         self._scan_name = name
-        self._scan_dir  = SCANS_DIR / name
-        pre_dir        = self._scan_dir / "pre"
-        post_dir       = self._scan_dir / "post"
-        subtracted_dir = self._scan_dir / "subtracted"
-        for d in (pre_dir, post_dir, subtracted_dir):
-            if d.exists():
-                shutil.rmtree(d)
-            d.mkdir(parents=True)
 
         cfg = dict(
+            scan_mode      = scan_mode,
             scan_name      = name,
             pre_dir        = str(pre_dir),
             post_dir       = str(post_dir),
@@ -2181,7 +2239,6 @@ class MainWindow(QMainWindow):
             flat_stack     = self.calib_stack_spin.value(),
             force_dark     = self.force_dark_cb.isChecked(),
             force_flat     = self.force_flat_cb.isChecked(),
-            post_only      = self.post_only_cb.isChecked(),
             use_real_camera = self.real_camera_cb.isChecked(),
             use_real_serial = self.real_serial_cb.isChecked(),
             settle_ms       = self.settle_spin.value(),
@@ -2208,6 +2265,7 @@ class MainWindow(QMainWindow):
         self.phase_bar.reset()
         self.start_stop_btn.setText("⏳  SCAN IN PROGRESS")
         self.start_stop_btn.setEnabled(False)
+        self.scan_mode_combo.setEnabled(False)
         self.start_stop_btn.setStyleSheet(
             f"background:{PANEL_BG}; border:1px solid {BORDER_CLR};"
             f"color:{TEXT_DIM}; font-size:13px; font-weight:bold; min-height:36px;"
@@ -2242,11 +2300,16 @@ class MainWindow(QMainWindow):
     def _scan_finished(self, ok: bool, msg: str):
         self._mode = "idle"
         self._freeze_preview = ok   # keep last scan image; clear on failure/cancel
-        self.start_stop_btn.setText("▶  START SCAN")
+        mode = self.scan_mode_combo.currentData()
+        label = "▶  CAPTURE PRE SCAN" if mode == "pre" else "▶  CAPTURE POST SCAN"
+        self.start_stop_btn.setText(label)
         self.start_stop_btn.setStyleSheet("")   # restore stylesheet objectName style
         self.start_stop_btn.setEnabled(True)
+        self.scan_mode_combo.setEnabled(True)
         self.cancel_scan_btn.setEnabled(False)
-        if ok and self._scan_dir is not None:
+        # Refresh relevant selectors
+        self._populate_pre_scan_combo()
+        if ok and self._scan_dir is not None and mode == "post":
             self._populate_scan_selector(select_path=self._scan_dir)
         else:
             self._on_scan_selected()   # re-evaluate enable state
