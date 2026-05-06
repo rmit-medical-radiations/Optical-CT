@@ -1933,7 +1933,7 @@ class ReconWorker(QObject):
                 ax = axs[0, 1]
                 axial = mu_vol[_y_mid, :, :]   # Z × X
                 _lo, _hi = _pct_lim(axial)
-                im = ax.imshow(axial, cmap="hot", vmin=_lo, vmax=_hi,
+                im = ax.imshow(axial, cmap="hot", vmin=max(_lo, 0), vmax=_hi,
                                aspect="equal", origin="upper")
                 _style_ax(ax, f"Axial slice (Y={_y_mid}, mid-sample)")
                 ax.set_xlabel("X (px)", color=_DIM, fontsize=8)
@@ -1954,7 +1954,7 @@ class ReconWorker(QObject):
                     (_Z - _Z // 2) * MM_PER_PIXEL_XZ,
                     _Y * MM_PER_SLICE_Y, 0,
                 ]
-                im = ax.imshow(sagittal, cmap="hot", vmin=_lo, vmax=_hi,
+                im = ax.imshow(sagittal, cmap="hot", vmin=max(_lo, 0), vmax=_hi,
                                aspect="auto", extent=_ext, origin="upper")
                 _style_ax(ax, "Sagittal slice (central X)")
                 ax.set_xlabel("Lateral Z (mm)", color=_DIM, fontsize=8)
@@ -1963,10 +1963,10 @@ class ReconWorker(QObject):
                 _s0_mm = sample_top * MM_PER_SLICE_Y
                 _s1_mm = (sample_top + sample_height) * MM_PER_SLICE_Y
                 _roi_mm = 10 * MM_PER_PIXEL_XZ
-                ax.axhspan(_s0_mm, _s1_mm, color=_ACC, alpha=0.10)
-                ax.axhline(_s0_mm, color=_ACC, linewidth=0.8, linestyle="--", alpha=0.6)
-                ax.axhline(_s1_mm, color=_ACC, linewidth=0.8, linestyle="--", alpha=0.6)
-                ax.axvspan(-_roi_mm, _roi_mm, color=_ACC, alpha=0.07)
+                ax.axhspan(_s0_mm, _s1_mm, color=_ACC, alpha=0.25)
+                ax.axhline(_s0_mm, color=_ACC, linewidth=1.2, linestyle="--", alpha=0.9)
+                ax.axhline(_s1_mm, color=_ACC, linewidth=1.2, linestyle="--", alpha=0.9)
+                ax.axvspan(-_roi_mm, _roi_mm, color=_ACC, alpha=0.15)
                 _cbar(fig, im, ax)
 
                 # ── bottom-right: depth dose ───────────────────────────────
