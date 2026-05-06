@@ -1881,6 +1881,102 @@ class ReconWorker(QObject):
             except Exception as e:
                 self.log.emit(f"⚠ Could not save depth dose plot: {e}")
 
+            # Sanity-check visualisation: sinogram + axial slice + sagittal slice + depth dose
+            try:
+                from matplotlib.backends.backend_agg import FigureCanvasAgg
+                _BG  = "#0d0f12"
+                _AX  = "#13161b"
+                _DIM = "#8b95a8"
+                _ACC = "#00d4aa"
+                _Y, _Z, _X = mu_vol.shape
+                _y_mid = _Y // 2
+
+                fig = Figure(figsize=(13, 9), facecolor=_BG)
+                FigureCanvasAgg(fig)
+                fig.suptitle(f"Reconstruction sanity check — {cfg['scan_name']}",
+                             color=_ACC, fontsize=11, y=0.99)
+
+                def _style_ax(ax, title):
+                    ax.set_facecolor(_AX)
+                    ax.tick_params(colors=_DIM, labelsize=8)
+                    for sp in ax.spines.values():
+                        sp.set_color("#252932")
+                    ax.set_title(title, color=_DIM, fontsize=9, pad=4)
+
+                def _cbar(fig, im, ax):
+                    cb = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.02)
+                    cb.ax.tick_params(colors=_DIM, labelsize=7)
+
+                axs = fig.subplots(2, 2)
+
+                # ── top-left: central sinogram ─────────────────────────────
+                ax = axs[0, 0]
+                sino = P[:, _y_mid, :]     # (N_angles, W)
+                im = ax.imshow(sino, aspect="auto", cmap="viridis",
+                               extent=[0, sino.shape[1],
+                                       float(angles_deg[-1]), float(angles_deg[0])])
+                _style_ax(ax, f"Sinogram (row {_y_mid}/{_Y})")
+                ax.set_xlabel("Column (px)", color=_DIM, fontsize=8)
+                ax.set_ylabel("Angle (°)",   color=_DIM, fontsize=8)
+                _cbar(fig, im, ax)
+
+                # ── top-right: axial XZ slice at mid depth ─────────────────
+                ax = axs[0, 1]
+                axial = mu_vol[_y_mid, :, :]   # Z × X
+                _vmax = float(np.percentile(axial, 99))
+                im = ax.imshow(axial, cmap="hot", vmin=0, vmax=_vmax or 1,
+                               aspect="equal", origin="upper")
+                _style_ax(ax, f"Axial slice (Y={_y_mid})")
+                ax.set_xlabel("X (px)", color=_DIM, fontsize=8)
+                ax.set_ylabel("Z (px)", color=_DIM, fontsize=8)
+                # draw dose ROI circle
+                _th = np.linspace(0, 2 * np.pi, 120)
+                ax.plot(_X // 2 + 10 * np.cos(_th),
+                        _Z // 2 + 10 * np.sin(_th),
+                        color=_ACC, linewidth=1, alpha=0.7)
+                _cbar(fig, im, ax)
+
+                # ── bottom-left: sagittal YZ slice at central X ────────────
+                ax = axs[1, 0]
+                sagittal = mu_vol[:, :, _X // 2]   # Y × Z
+                _vmax = float(np.percentile(sagittal, 99))
+                _ext = [
+                    -(_Z // 2) * MM_PER_PIXEL_XZ,
+                    (_Z - _Z // 2) * MM_PER_PIXEL_XZ,
+                    _Y * MM_PER_SLICE_Y, 0,
+                ]
+                im = ax.imshow(sagittal, cmap="hot", vmin=0, vmax=_vmax or 1,
+                               aspect="auto", extent=_ext, origin="upper")
+                _style_ax(ax, "Sagittal slice (central X)")
+                ax.set_xlabel("Lateral Z (mm)", color=_DIM, fontsize=8)
+                ax.set_ylabel("Depth Y (mm)",   color=_DIM, fontsize=8)
+                # mark sample ROI
+                _s0_mm = sample_top * MM_PER_SLICE_Y
+                _s1_mm = (sample_top + sample_height) * MM_PER_SLICE_Y
+                _roi_mm = 10 * MM_PER_PIXEL_XZ
+                ax.axhspan(_s0_mm, _s1_mm, color=_ACC, alpha=0.10)
+                ax.axhline(_s0_mm, color=_ACC, linewidth=0.8, linestyle="--", alpha=0.6)
+                ax.axhline(_s1_mm, color=_ACC, linewidth=0.8, linestyle="--", alpha=0.6)
+                ax.axvspan(-_roi_mm, _roi_mm, color=_ACC, alpha=0.07)
+                _cbar(fig, im, ax)
+
+                # ── bottom-right: depth dose ───────────────────────────────
+                ax = axs[1, 1]
+                ax.plot(depth_mm, smoothed, color=_ACC, linewidth=1.5)
+                ax.fill_between(depth_mm, smoothed, alpha=0.15, color=_ACC)
+                _style_ax(ax, "Depth dose (relative)")
+                ax.set_xlabel("Depth (mm)",    color=_DIM, fontsize=8)
+                ax.set_ylabel("Relative dose", color=_DIM, fontsize=8)
+                ax.set_xlim(float(depth_mm[0]), float(depth_mm[-1]))
+                ax.set_ylim(0, None)
+
+                fig.tight_layout(rect=[0, 0, 1, 0.97])
+                fig.savefig(str(Path(depth_dose_dir) / "sanity_check.png"),
+                            dpi=150, facecolor=fig.get_facecolor())
+                self.log.emit("Sanity-check visualisation saved.")
+            except Exception as e:
+                self.log.emit(f"⚠ Could not save sanity check: {e}")
+
             # Dose profiles per slice
             self.log.emit("Computing per-slice dose profiles...")
             Y = mu_vol.shape[0]
