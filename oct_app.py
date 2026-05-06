@@ -1109,6 +1109,9 @@ class DoseDepthPlot(QWidget):
         self._rel_dose    = None
         self._dose_signal = None
         self._title       = "Depth Dose"
+        self._crs_vline   = None
+        self._crs_hline   = None
+        self._crs_text    = None
 
         toggle_row = QHBoxLayout()
         toggle_row.setContentsMargins(0, 2, 0, 2)
@@ -1125,6 +1128,8 @@ class DoseDepthPlot(QWidget):
         self.ax  = self.fig.add_subplot(111, facecolor="#13161b")
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setStyleSheet("background-color: #0d0f12;")
+        self.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
+        self.canvas.mpl_connect("axes_leave_event",    self._on_axes_leave)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1146,6 +1151,8 @@ class DoseDepthPlot(QWidget):
 
     def _refresh_plot(self):
         self.ax.clear()
+        self._crs_vline = self._crs_hline = self._crs_text = None
+
         self.ax.set_facecolor("#13161b")
         self.ax.tick_params(colors="#5a6070", labelsize=9)
         for sp in self.ax.spines.values():
@@ -1165,7 +1172,48 @@ class DoseDepthPlot(QWidget):
             self.ax.set_title(self._title, color=ACCENT, fontsize=9, pad=4)
             self.ax.plot(self._depth_mm, y, color=ACCENT, linewidth=1.5)
 
+        # Crosshair artists — created after plotting so they sit on top
+        self._crs_vline = self.ax.axvline(x=0, color="#ffffff", linewidth=0.7,
+                                          alpha=0.5, visible=False)
+        self._crs_hline = self.ax.axhline(y=0, color="#ffffff", linewidth=0.7,
+                                          alpha=0.5, visible=False)
+        self._crs_text  = self.ax.text(
+            0.02, 0.97, "", transform=self.ax.transAxes,
+            color="#ffffff", fontsize=8, va="top", ha="left",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="#1a1d22", alpha=0.75),
+            visible=False,
+        )
+
         self.fig.tight_layout(pad=1.2)
+        self.canvas.draw_idle()
+
+    def _on_mouse_move(self, event):
+        if event.inaxes != self.ax or self._crs_vline is None:
+            return
+        x = event.xdata
+        use_abs = self._abs_rb.isChecked() and self._dose_signal is not None
+        if self._depth_mm is not None:
+            data_y = self._dose_signal if use_abs else self._rel_dose
+            y = float(np.interp(x, self._depth_mm, data_y))
+            unit = "OD" if use_abs else "rel"
+            label = f"{x:.2f} mm\n{y:.4f} {unit}"
+        else:
+            y = event.ydata
+            label = f"{x:.2f} mm"
+        self._crs_vline.set_xdata([x])
+        self._crs_hline.set_ydata([y])
+        self._crs_vline.set_visible(True)
+        self._crs_hline.set_visible(True)
+        self._crs_text.set_text(label)
+        self._crs_text.set_visible(True)
+        self.canvas.draw_idle()
+
+    def _on_axes_leave(self, event):
+        if self._crs_vline is None:
+            return
+        self._crs_vline.set_visible(False)
+        self._crs_hline.set_visible(False)
+        self._crs_text.set_visible(False)
         self.canvas.draw_idle()
 
 
