@@ -88,11 +88,36 @@ def _compute_version() -> str:
 APP_VERSION = _compute_version()
 
 HOME = Path.home()
-BASE_DIR    = HOME / "OCT"
-SCANS_DIR   = BASE_DIR / "scans"
-CONFIG_DIR  = BASE_DIR / "config"
+BASE_DIR      = HOME / "OCT"
+SCANS_DIR     = BASE_DIR / "scans"
+CONFIG_DIR    = BASE_DIR / "config"
+DEFAULTS_JSON = CONFIG_DIR / "defaults.json"
 for d in (SCANS_DIR, CONFIG_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
+_BUILTIN_DEFAULTS = {
+    "crop_cx":      995,
+    "crop_top":     270,
+    "crop_extent":  700,
+    "sample_top":   0,
+    "sample_height": 450,
+    "step_deg":     2,
+    "oct_stack":    3,
+    "calib_stack":  3,
+    "settle_ms":    300,
+}
+
+def load_defaults() -> dict:
+    """Return defaults from DEFAULTS_JSON, falling back to built-in values."""
+    if DEFAULTS_JSON.exists():
+        try:
+            return {**_BUILTIN_DEFAULTS, **json.loads(DEFAULTS_JSON.read_text())}
+        except Exception:
+            pass
+    return dict(_BUILTIN_DEFAULTS)
+
+def save_defaults(values: dict):
+    DEFAULTS_JSON.write_text(json.dumps(values, indent=2))
 
 # Write a light-coloured down-arrow SVG for the QComboBox indicator so it is
 # visible on the dark background regardless of the system palette.
@@ -2315,12 +2340,18 @@ class MainWindow(QMainWindow):
     # ── UI construction ──────────────────────────────────────────────────────
 
     def _build_ui(self):
+        _d = load_defaults()   # loaded once; used throughout _build_ui
+
         # ── Menu bar ──────────────────────────────────────────────────────────
         wf_menu = self.menuBar().addMenu("Workflow")
         for mode, label, _ in StartupDialog._MODES:
             action = QAction(label, self)
             action.triggered.connect(lambda checked, m=mode: self._apply_startup_mode(m))
             wf_menu.addAction(action)
+        wf_menu.addSeparator()
+        save_defaults_action = QAction("Save current settings as defaults", self)
+        save_defaults_action.triggered.connect(self._save_current_as_defaults)
+        wf_menu.addAction(save_defaults_action)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -2336,8 +2367,10 @@ class MainWindow(QMainWindow):
         preview_box = QGroupBox("Camera preview")
         pl = QVBoxLayout(preview_box)
         self.preview = PreviewWithROI()
-        self.preview.set_default_roi(cx=995, top=270, extent=700,
-                                     sample_top=0, sample_h=450)
+        self.preview.set_default_roi(cx=_d["crop_cx"], top=_d["crop_top"],
+                                     extent=_d["crop_extent"],
+                                     sample_top=_d["sample_top"],
+                                     sample_h=_d["sample_height"])
         self.preview.setMinimumHeight(200)
         pl.addWidget(self.preview, 1)
         self.roi_label = QLabel("ROI: cx=995  top=270  extent=700")
@@ -2388,26 +2421,26 @@ class MainWindow(QMainWindow):
         # Step increment (row 3)
         ctrl_grid.addWidget(QLabel("Step (deg):"), 3, 0)
         self.step_spin = QSpinBox()
-        self.step_spin.setRange(1, 30); self.step_spin.setValue(2)
+        self.step_spin.setRange(1, 30); self.step_spin.setValue(_d["step_deg"])
         self.step_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         ctrl_grid.addWidget(self.step_spin, 3, 1)
 
         # Stacks (rows 4-5)
         ctrl_grid.addWidget(QLabel("Oct stack:"), 4, 0)
         self.oct_stack_spin = QSpinBox()
-        self.oct_stack_spin.setRange(1, 20); self.oct_stack_spin.setValue(3)
+        self.oct_stack_spin.setRange(1, 20); self.oct_stack_spin.setValue(_d["oct_stack"])
         self.oct_stack_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         ctrl_grid.addWidget(self.oct_stack_spin, 4, 1)
 
         ctrl_grid.addWidget(QLabel("Dark/flat stack:"), 5, 0)
         self.calib_stack_spin = QSpinBox()
-        self.calib_stack_spin.setRange(1, 20); self.calib_stack_spin.setValue(3)
+        self.calib_stack_spin.setRange(1, 20); self.calib_stack_spin.setValue(_d["calib_stack"])
         self.calib_stack_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         ctrl_grid.addWidget(self.calib_stack_spin, 5, 1)
 
         ctrl_grid.addWidget(QLabel("Settle (ms):"), 6, 0)
         self.settle_spin = QSpinBox()
-        self.settle_spin.setRange(100, 2000); self.settle_spin.setValue(300)
+        self.settle_spin.setRange(100, 2000); self.settle_spin.setValue(_d["settle_ms"])
         self.settle_spin.setSingleStep(100)
         self.settle_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.settle_spin.setToolTip("Wait after motor stops before capturing (reduce to speed up scan)")
@@ -2484,7 +2517,7 @@ class MainWindow(QMainWindow):
 
         rg.addWidget(QLabel("Crop centre X:"), 1, 0)
         self.crop_cx_spin = QSpinBox()
-        self.crop_cx_spin.setRange(1, 9999); self.crop_cx_spin.setValue(995)
+        self.crop_cx_spin.setRange(1, 9999); self.crop_cx_spin.setValue(_d["crop_cx"])
         self.crop_cx_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         rg.addWidget(self.crop_cx_spin, 1, 1)
         self.auto_axis_btn = QPushButton("Auto-detect")
@@ -2493,25 +2526,25 @@ class MainWindow(QMainWindow):
 
         rg.addWidget(QLabel("Crop top Y:"), 2, 0)
         self.crop_top_spin = QSpinBox()
-        self.crop_top_spin.setRange(0, 9999); self.crop_top_spin.setValue(270)
+        self.crop_top_spin.setRange(0, 9999); self.crop_top_spin.setValue(_d["crop_top"])
         self.crop_top_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         rg.addWidget(self.crop_top_spin, 2, 1)
 
         rg.addWidget(QLabel("Crop extent (px):"), 3, 0)
         self.crop_extent_spin = QSpinBox()
-        self.crop_extent_spin.setRange(64, 4096); self.crop_extent_spin.setValue(700)
+        self.crop_extent_spin.setRange(64, 4096); self.crop_extent_spin.setValue(_d["crop_extent"])
         self.crop_extent_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         rg.addWidget(self.crop_extent_spin, 3, 1)
 
         rg.addWidget(QLabel("Sample top (px):"), 4, 0)
         self.sample_top_spin = QSpinBox()
-        self.sample_top_spin.setRange(0, 9999); self.sample_top_spin.setValue(0)
+        self.sample_top_spin.setRange(0, 9999); self.sample_top_spin.setValue(_d["sample_top"])
         self.sample_top_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         rg.addWidget(self.sample_top_spin, 4, 1)
 
         rg.addWidget(QLabel("Sample height (px):"), 5, 0)
         self.sample_h_spin = QSpinBox()
-        self.sample_h_spin.setRange(1, 9999); self.sample_h_spin.setValue(450)
+        self.sample_h_spin.setRange(1, 9999); self.sample_h_spin.setValue(_d["sample_height"])
         self.sample_h_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         rg.addWidget(self.sample_h_spin, 5, 1)
 
@@ -2928,6 +2961,24 @@ class MainWindow(QMainWindow):
         path = self.scan_selector.currentData()
         self.recon_btn.setEnabled(
             path is not None and self._mode == "idle")
+        if path is None:
+            return
+        cfg_path = path / "depth_dose" / "recon_config.json"
+        if not cfg_path.exists():
+            return
+        try:
+            cfg = json.loads(cfg_path.read_text())
+            self._updating_overlays = True
+            if "crop_cx"      in cfg: self.crop_cx_spin.setValue(cfg["crop_cx"])
+            if "crop_top"     in cfg: self.crop_top_spin.setValue(cfg["crop_top"])
+            if "crop_extent"  in cfg: self.crop_extent_spin.setValue(cfg["crop_extent"])
+            if "sample_top"   in cfg: self.sample_top_spin.setValue(cfg["sample_top"])
+            if "sample_height" in cfg: self.sample_h_spin.setValue(cfg["sample_height"])
+            self._updating_overlays = False
+            self._on_crop_spinbox_changed()
+            self._on_sample_spinbox_changed()
+        except Exception:
+            self._updating_overlays = False
 
     # ── Reconstruction ────────────────────────────────────────────────────────
 
@@ -3031,6 +3082,20 @@ class MainWindow(QMainWindow):
         elif mode == "export":
             ExportDialog(self, current_scan=scan or self.scan_selector.currentData()).exec()
         # "pre" is the default combo state — nothing extra needed
+
+    def _save_current_as_defaults(self):
+        save_defaults({
+            "crop_cx":       self.crop_cx_spin.value(),
+            "crop_top":      self.crop_top_spin.value(),
+            "crop_extent":   self.crop_extent_spin.value(),
+            "sample_top":    self.sample_top_spin.value(),
+            "sample_height": self.sample_h_spin.value(),
+            "step_deg":      self.step_spin.value(),
+            "oct_stack":     self.oct_stack_spin.value(),
+            "calib_stack":   self.calib_stack_spin.value(),
+            "settle_ms":     self.settle_spin.value(),
+        })
+        self._log(f"✓ Defaults saved to {DEFAULTS_JSON}")
 
     def _load_depth_dose_path(self, path: Path):
         """Load a specific depth_dose file and plot it."""
