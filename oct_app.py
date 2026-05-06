@@ -318,6 +318,31 @@ QTextEdit {{
     font-family: 'Courier New', monospace;
     font-size: 11px;
 }}
+QMenuBar {{
+    background-color: {PANEL_BG};
+    color: {TEXT_MAIN};
+    border-bottom: 1px solid {BORDER_CLR};
+}}
+QMenuBar::item {{
+    background: transparent;
+    padding: 4px 12px;
+}}
+QMenuBar::item:selected {{
+    background-color: #0d2e25;
+    color: {ACCENT};
+}}
+QMenu {{
+    background-color: {PANEL_BG};
+    border: 1px solid {BORDER_CLR};
+    color: {TEXT_MAIN};
+}}
+QMenu::item {{
+    padding: 5px 24px 5px 12px;
+}}
+QMenu::item:selected {{
+    background-color: #0d2e25;
+    color: {ACCENT};
+}}
 """
 
 
@@ -2007,6 +2032,13 @@ class MainWindow(QMainWindow):
     # ── UI construction ──────────────────────────────────────────────────────
 
     def _build_ui(self):
+        # ── Menu bar ──────────────────────────────────────────────────────────
+        wf_menu = self.menuBar().addMenu("Workflow")
+        for mode, label, _ in StartupDialog._MODES:
+            action = QAction(label, self)
+            action.triggered.connect(lambda checked, m=mode: self._apply_startup_mode(m))
+            wf_menu.addAction(action)
+
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
