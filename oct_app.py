@@ -1105,33 +1105,66 @@ class PreviewWithROI(QWidget):
 class DoseDepthPlot(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._depth_mm    = None
+        self._rel_dose    = None
+        self._dose_signal = None
+        self._title       = "Depth Dose"
+
+        toggle_row = QHBoxLayout()
+        toggle_row.setContentsMargins(0, 2, 0, 2)
+        self._rel_rb = QRadioButton("Relative")
+        self._abs_rb = QRadioButton("Absolute (OD)")
+        self._rel_rb.setChecked(True)
+        self._abs_rb.setEnabled(False)
+        self._rel_rb.toggled.connect(self._refresh_plot)
+        toggle_row.addWidget(self._rel_rb)
+        toggle_row.addWidget(self._abs_rb)
+        toggle_row.addStretch()
+
         self.fig = Figure(figsize=(5, 3), facecolor="#0d0f12")
         self.ax  = self.fig.add_subplot(111, facecolor="#13161b")
-        self.ax.tick_params(colors="#5a6070", labelsize=9)
-        for sp in self.ax.spines.values():
-            sp.set_color("#252932")
-        self.ax.set_xlabel("Depth (mm)", color="#5a6070", fontsize=9)
-        self.ax.set_ylabel("Relative Dose", color="#5a6070", fontsize=9)
-        self.ax.grid(True, alpha=0.15, color="#252932")
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setStyleSheet("background-color: #0d0f12;")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0,0,0,0)
-        layout.addWidget(self.canvas)
-        # seed with flat line
-        self.set_data(np.linspace(0, 60, 121), np.zeros(121))
 
-    def set_data(self, depth_mm, rel_dose, title="Depth Dose"):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addLayout(toggle_row)
+        layout.addWidget(self.canvas, 1)
+
+        self._refresh_plot()
+
+    def set_data(self, depth_mm, rel_dose, dose_signal=None, title="Depth Dose"):
+        self._depth_mm    = depth_mm
+        self._rel_dose    = rel_dose
+        self._dose_signal = dose_signal
+        self._title       = title
+        self._abs_rb.setEnabled(dose_signal is not None)
+        if dose_signal is None and self._abs_rb.isChecked():
+            self._rel_rb.setChecked(True)
+        self._refresh_plot()
+
+    def _refresh_plot(self):
         self.ax.clear()
         self.ax.set_facecolor("#13161b")
         self.ax.tick_params(colors="#5a6070", labelsize=9)
         for sp in self.ax.spines.values():
             sp.set_color("#252932")
         self.ax.set_xlabel("Depth (mm)", color="#5a6070", fontsize=9)
-        self.ax.set_ylabel("Relative Dose", color="#5a6070", fontsize=9)
         self.ax.grid(True, alpha=0.15, color="#252932")
-        self.ax.set_title(title, color=ACCENT, fontsize=9, pad=4)
-        self.ax.plot(depth_mm, rel_dose, color=ACCENT, linewidth=1.5)
+
+        if self._depth_mm is None:
+            self.ax.set_ylabel("Relative Dose", color="#5a6070", fontsize=9)
+            self.ax.plot(np.linspace(0, 60, 121), np.zeros(121),
+                         color=ACCENT, linewidth=1.5)
+        else:
+            use_abs = self._abs_rb.isChecked() and self._dose_signal is not None
+            y       = self._dose_signal if use_abs else self._rel_dose
+            ylabel  = "Dose (OD)" if use_abs else "Relative Dose"
+            self.ax.set_ylabel(ylabel, color="#5a6070", fontsize=9)
+            self.ax.set_title(self._title, color=ACCENT, fontsize=9, pad=4)
+            self.ax.plot(self._depth_mm, y, color=ACCENT, linewidth=1.5)
+
         self.fig.tight_layout(pad=1.2)
         self.canvas.draw_idle()
 
@@ -1575,7 +1608,7 @@ class ScanWorker(QObject):
 class ReconWorker(QObject):
     progress    = pyqtSignal(int)
     log         = pyqtSignal(str)
-    dose_ready  = pyqtSignal(object, object)   # depth_mm, rel_dose arrays
+    dose_ready  = pyqtSignal(object, object, object)   # depth_mm, rel_dose, dose_signal
     finished    = pyqtSignal(bool, str)
 
     def __init__(self, cfg: dict):
@@ -1659,8 +1692,9 @@ class ReconWorker(QObject):
                 roi_radius_px=10,
                 invert=False,
             )
-            smoothed = np.array(ema(rel_dose, alpha=0.1))
-            self.dose_ready.emit(depth_mm, smoothed)
+            smoothed        = np.array(ema(rel_dose,    alpha=0.1))
+            smoothed_signal = np.array(ema(dose_signal, alpha=0.1))
+            self.dose_ready.emit(depth_mm, smoothed, smoothed_signal)
             self.progress.emit(85)
 
             # Save depth dose
@@ -2700,7 +2734,7 @@ class MainWindow(QMainWindow):
         self._worker.progress.connect(self.recon_progress.setValue)
         self._worker.log.connect(self._log)
         self._worker.dose_ready.connect(
-            lambda d, r: self.plot.set_data(d, r, title=f"Depth Dose — {scan_dir.name}"))
+            lambda d, r, s: self.plot.set_data(d, r, s, title=f"Depth Dose — {scan_dir.name}"))
         self._worker.finished.connect(self._recon_finished)
         self._worker.finished.connect(self._thread.quit)
         self._thread.start()
@@ -2754,10 +2788,11 @@ class MainWindow(QMainWindow):
             import pandas as pd
             df = (pd.read_excel(path) if path.endswith(".xlsx")
                   else pd.read_csv(path))
-            depth_mm = df["depth_mm"].to_numpy()
-            rel_dose  = df["rel_dose"].to_numpy()
+            depth_mm    = df["depth_mm"].to_numpy()
+            rel_dose    = df["rel_dose"].to_numpy()
+            dose_signal = df["dose_signal"].to_numpy() if "dose_signal" in df.columns else None
             title = Path(path).parts[-3] if len(Path(path).parts) >= 3 else Path(path).stem
-            self.plot.set_data(depth_mm, rel_dose, title=f"Depth Dose — {title}")
+            self.plot.set_data(depth_mm, rel_dose, dose_signal, title=f"Depth Dose — {title}")
             self._log(f"✓ Loaded depth dose: {path}")
         except Exception as e:
             self._log(f"✗ Failed to load depth dose: {e}")
