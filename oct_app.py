@@ -2828,6 +2828,7 @@ class MainWindow(QMainWindow):
             self.crop_top_spin.value(),
             self.crop_extent_spin.value(),
         )
+        self.force_vol_cb.setChecked(True)
 
     def _on_sample_spinbox_changed(self):
         if self._updating_overlays:
