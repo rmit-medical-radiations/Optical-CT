@@ -1345,13 +1345,17 @@ class ScanWorker(QObject):
 
         try:
             # ── Phase 0: Dark ─────────────────────────────────────────────────
-            self.log.emit("Waiting: turn lamp OFF and remove sample, then click ① Capture dark")
-            if not self._wait_for_user(0):
-                self.finished.emit(False, "Aborted"); return
+            if force_dark or not os.path.exists(dark_path):
+                self.log.emit("Waiting: turn lamp OFF and remove sample, then click ① Capture dark")
+                if not self._wait_for_user(0):
+                    self.finished.emit(False, "Aborted"); return
+                self.phase_running.emit(0)
+                lamp_off()
+                self.log.emit("Capturing dark frame (lamp OFF)…")
+            else:
+                self.phase_running.emit(0)
+                self.log.emit("Loading existing dark frame…")
 
-            self.phase_running.emit(0)
-            self.log.emit("Capturing dark frame (lamp OFF)…")
-            lamp_off()
             dark = get_or_create_calibration_scan(
                 dark_path, capture, dark_stack, force_dark, "dark")
             if dark is None:
@@ -1361,13 +1365,17 @@ class ScanWorker(QObject):
                 self.finished.emit(False, "Aborted"); return
 
             # ── Phase 1: Flat ─────────────────────────────────────────────────
-            self.log.emit("Waiting: turn lamp ON with no sample, then click ② Capture flat")
-            if not self._wait_for_user(1):
-                self.finished.emit(False, "Aborted"); return
+            if force_flat or not os.path.exists(flat_path):
+                self.log.emit("Waiting: turn lamp ON with no sample, then click ② Capture flat")
+                if not self._wait_for_user(1):
+                    self.finished.emit(False, "Aborted"); return
+                self.phase_running.emit(1)
+                lamp_on()
+                self.log.emit("Capturing flat frame (lamp ON, no sample)…")
+            else:
+                self.phase_running.emit(1)
+                self.log.emit("Loading existing flat frame…")
 
-            self.phase_running.emit(1)
-            self.log.emit("Capturing flat frame (lamp ON, no sample)…")
-            lamp_on()
             flat = get_or_create_calibration_scan(
                 flat_path, capture, flat_stack, force_flat, "flat")
             if flat is None:
