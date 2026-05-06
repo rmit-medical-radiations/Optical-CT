@@ -3083,6 +3083,8 @@ class MainWindow(QMainWindow):
         self._log(f"{'✓' if ok else '✗'} {msg}")
         if not ok and "abort" not in msg.lower() and "cancel" not in msg.lower():
             QMessageBox.critical(self, "Scan error", msg)
+        if ok and mode == "pre":
+            self._auto_detect_axis()
 
     # ── Scan selector ─────────────────────────────────────────────────────────
 
