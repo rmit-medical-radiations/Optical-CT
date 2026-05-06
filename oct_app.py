@@ -1889,7 +1889,10 @@ class ReconWorker(QObject):
                 _DIM = "#8b95a8"
                 _ACC = "#00d4aa"
                 _Y, _Z, _X = mu_vol.shape
-                _y_mid = _Y // 2
+                # sinogram row at the mid-point of the sample region
+                _sino_row = int(np.clip(sample_top + sample_height // 2, 0, _Y - 1))
+                # axial slice at same depth
+                _y_mid = _sino_row
 
                 fig = Figure(figsize=(13, 9), facecolor=_BG)
                 FigureCanvasAgg(fig)
@@ -1907,26 +1910,32 @@ class ReconWorker(QObject):
                     cb = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.02)
                     cb.ax.tick_params(colors=_DIM, labelsize=7)
 
+                def _pct_lim(arr):
+                    lo, hi = np.percentile(arr, (1, 99))
+                    return float(lo), float(hi) if hi > lo else float(lo + 1e-12)
+
                 axs = fig.subplots(2, 2)
 
-                # ── top-left: central sinogram ─────────────────────────────
+                # ── top-left: sinogram at mid-sample row ───────────────────
                 ax = axs[0, 0]
-                sino = P[:, _y_mid, :]     # (N_angles, W)
+                sino = P[:, _sino_row, :]     # (N_angles, W)
+                _lo, _hi = _pct_lim(sino)
                 im = ax.imshow(sino, aspect="auto", cmap="viridis",
+                               vmin=_lo, vmax=_hi,
                                extent=[0, sino.shape[1],
                                        float(angles_deg[-1]), float(angles_deg[0])])
-                _style_ax(ax, f"Sinogram (row {_y_mid}/{_Y})")
+                _style_ax(ax, f"Sinogram (row {_sino_row}, mid-sample)")
                 ax.set_xlabel("Column (px)", color=_DIM, fontsize=8)
                 ax.set_ylabel("Angle (°)",   color=_DIM, fontsize=8)
                 _cbar(fig, im, ax)
 
-                # ── top-right: axial XZ slice at mid depth ─────────────────
+                # ── top-right: axial XZ slice at mid-sample depth ──────────
                 ax = axs[0, 1]
                 axial = mu_vol[_y_mid, :, :]   # Z × X
-                _vmax = float(np.percentile(axial, 99))
-                im = ax.imshow(axial, cmap="hot", vmin=0, vmax=_vmax or 1,
+                _lo, _hi = _pct_lim(axial)
+                im = ax.imshow(axial, cmap="hot", vmin=_lo, vmax=_hi,
                                aspect="equal", origin="upper")
-                _style_ax(ax, f"Axial slice (Y={_y_mid})")
+                _style_ax(ax, f"Axial slice (Y={_y_mid}, mid-sample)")
                 ax.set_xlabel("X (px)", color=_DIM, fontsize=8)
                 ax.set_ylabel("Z (px)", color=_DIM, fontsize=8)
                 # draw dose ROI circle
@@ -1939,13 +1948,13 @@ class ReconWorker(QObject):
                 # ── bottom-left: sagittal YZ slice at central X ────────────
                 ax = axs[1, 0]
                 sagittal = mu_vol[:, :, _X // 2]   # Y × Z
-                _vmax = float(np.percentile(sagittal, 99))
+                _lo, _hi = _pct_lim(sagittal)
                 _ext = [
                     -(_Z // 2) * MM_PER_PIXEL_XZ,
                     (_Z - _Z // 2) * MM_PER_PIXEL_XZ,
                     _Y * MM_PER_SLICE_Y, 0,
                 ]
-                im = ax.imshow(sagittal, cmap="hot", vmin=0, vmax=_vmax or 1,
+                im = ax.imshow(sagittal, cmap="hot", vmin=_lo, vmax=_hi,
                                aspect="auto", extent=_ext, origin="upper")
                 _style_ax(ax, "Sagittal slice (central X)")
                 ax.set_xlabel("Lateral Z (mm)", color=_DIM, fontsize=8)
