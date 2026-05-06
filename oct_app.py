@@ -67,8 +67,25 @@ from matplotlib.figure import Figure
 # Paths / constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-APP_TITLE   = "Optical CT Scanner"
-APP_VERSION = "1.0.0"
+APP_TITLE        = "Optical CT Scanner"
+_VERSION_MAJOR   = 1
+_VERSION_MINOR   = 0
+
+def _compute_version() -> str:
+    try:
+        import subprocess
+        patch = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+        if patch.isdigit():
+            return f"{_VERSION_MAJOR}.{_VERSION_MINOR}.{patch}"
+    except Exception:
+        pass
+    return f"{_VERSION_MAJOR}.{_VERSION_MINOR}.0"
+
+APP_VERSION = _compute_version()
 
 HOME = Path.home()
 BASE_DIR    = HOME / "OCT"
@@ -1950,7 +1967,7 @@ class MainWindow(QMainWindow):
     def __init__(self, mode: str = "pre"):
         super().__init__()
         self._startup_mode = mode
-        self.setWindowTitle(APP_TITLE)
+        self.setWindowTitle(f"{APP_TITLE}  v{APP_VERSION}")
         # Start maximised so the layout fills whatever screen is available
         self.showMaximized()
 
