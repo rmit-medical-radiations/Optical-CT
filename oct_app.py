@@ -1345,7 +1345,16 @@ class ScanWorker(QObject):
 
         try:
             # ── Phase 0: Dark ─────────────────────────────────────────────────
-            if force_dark or not os.path.exists(dark_path):
+            dark_exists = os.path.exists(dark_path)
+            flat_exists = os.path.exists(flat_path)
+            self.log.emit(
+                f"Dark: {'✓ cached — ' + dark_path if dark_exists else '✗ not found — will capture'}"
+            )
+            self.log.emit(
+                f"Flat: {'✓ cached — ' + flat_path if flat_exists else '✗ not found — will capture'}"
+            )
+
+            if force_dark or not dark_exists:
                 self.log.emit("Waiting: turn lamp OFF and remove sample, then click ① Capture dark")
                 if not self._wait_for_user(0):
                     self.finished.emit(False, "Aborted"); return
@@ -1365,7 +1374,7 @@ class ScanWorker(QObject):
                 self.finished.emit(False, "Aborted"); return
 
             # ── Phase 1: Flat ─────────────────────────────────────────────────
-            if force_flat or not os.path.exists(flat_path):
+            if force_flat or not flat_exists:
                 self.log.emit("Waiting: turn lamp ON with no sample, then click ② Capture flat")
                 if not self._wait_for_user(1):
                     self.finished.emit(False, "Aborted"); return
