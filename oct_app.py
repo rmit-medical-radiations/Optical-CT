@@ -604,6 +604,28 @@ def find_axis_from_nozzle(img: np.ndarray) -> Optional[float]:
     return centroid_local + border
 
 
+def find_axis_from_projections(img_dir: Path) -> Optional[float]:
+    """
+    Estimate axis of rotation by averaging all projection PNGs in img_dir.
+
+    Averaging cancels the rotating sample; the fixed nozzle holder remains
+    as a sharp dark band, which find_axis_from_nozzle then locates.
+    Returns None if the directory is empty or no clear band is found.
+    """
+    files = sorted(img_dir.glob("*.png"))
+    if not files:
+        return None
+    stack = []
+    for f in files:
+        img = cv2.imread(str(f), cv2.IMREAD_GRAYSCALE)
+        if img is not None:
+            stack.append(img.astype(np.float32))
+    if not stack:
+        return None
+    mean_img = np.mean(stack, axis=0)
+    return find_axis_from_nozzle(mean_img)
+
+
 def ema(values, alpha=0.1):
     out = []
     for i, v in enumerate(values):
@@ -2510,21 +2532,36 @@ class MainWindow(QMainWindow):
     # ── Preview update ────────────────────────────────────────────────────────
 
     def _auto_detect_axis(self):
+        # Prefer scan projections: try the selected scan, then the pre-scan combo selection.
+        # Averaging many angles cancels the rotating sample and leaves the nozzle visible.
+        for candidate in (self.scan_selector.currentData(),
+                          self.pre_scan_combo.currentData()):
+            if candidate is None:
+                continue
+            pre_dir = candidate / "pre"
+            if pre_dir.is_dir() and list(pre_dir.glob("*.png")):
+                cx = find_axis_from_projections(pre_dir)
+                if cx is not None:
+                    cx_int = int(round(cx))
+                    self._log(f"✓ Axis detected at x={cx_int} px (averaged projections in {candidate.name}/pre/)")
+                    self.preview._default_cx = cx_int
+                    self.crop_cx_spin.setValue(cx_int)
+                    return
+                self._log(f"⚠ Axis detection from {candidate.name}/pre/ failed — nozzle not clearly visible.")
+                return
+
+        # Fall back to flat field if no scan images are available
         flat_path = CONFIG_DIR / "flat.npy"
         if not flat_path.exists():
-            self._log("⚠ No flat field found — capture a flat before detecting the axis.")
+            self._log("⚠ No scan selected and no flat field found — cannot detect axis.")
             return
-        img = np.load(flat_path)
-        cx = find_axis_from_nozzle(img)
+        cx = find_axis_from_nozzle(np.load(flat_path))
         if cx is None:
-            self._log("⚠ Axis detection failed — nozzle holder not clearly visible in "
-                      "the top of the flat field. Ensure the nozzle is mounted and the "
-                      "flat was captured with the lamp on.")
+            self._log("⚠ Axis detection from flat field failed — nozzle holder not clearly visible. "
+                      "Ensure the nozzle is mounted and the flat was captured with the lamp on.")
             return
         cx_int = int(round(cx))
-        self._log(f"✓ Axis detected at x={cx_int} px")
-        # Update the seeded default so the first frame places the ROI correctly
-        # (roi_item may not exist yet if called on startup before any frame arrives)
+        self._log(f"✓ Axis detected at x={cx_int} px (flat field)")
         self.preview._default_cx = cx_int
         self.crop_cx_spin.setValue(cx_int)
 
