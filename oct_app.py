@@ -139,7 +139,7 @@ BORDER_CLR  = "#252932"
 ACCENT      = "#00d4aa"
 ACCENT2     = "#0099ff"
 TEXT_MAIN   = "#e2e6ed"
-TEXT_DIM    = "#5a6070"
+TEXT_DIM    = "#8b95a8"
 BTN_ACTIVE  = "#00d4aa"
 BTN_STOP    = "#e05252"
 PHASE_IDLE  = "#252932"
@@ -1808,6 +1808,7 @@ class ReconWorker(QObject):
                 ax.tick_params(colors="#5a6070", labelsize=9)
                 for sp in ax.spines.values():
                     sp.set_color("#252932")
+                ax.set_title(f"Depth Dose — {cfg['scan_name']}", color="#00d4aa", fontsize=10, pad=6)
                 ax.set_xlabel("Depth (mm)", color="#5a6070", fontsize=9)
                 ax.set_ylabel("Relative Dose", color="#5a6070", fontsize=9)
                 ax.grid(True, alpha=0.15, color="#252932")
