@@ -1971,7 +1971,7 @@ class ReconWorker(QObject):
                 ax.set_ylim(0, None)
 
                 fig.tight_layout(rect=[0, 0, 1, 0.97])
-                fig.savefig(str(Path(depth_dose_dir) / "sanity_check.png"),
+                fig.savefig(str(Path(reconstruct_dir) / "sanity_check.png"),
                             dpi=150, facecolor=fig.get_facecolor())
                 self.log.emit("Sanity-check visualisation saved.")
             except Exception as e:
