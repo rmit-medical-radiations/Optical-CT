@@ -1967,6 +1967,9 @@ class ReconWorker(QObject):
                 ax.axhline(_s0_mm, color=_ACC, linewidth=1.2, linestyle="--", alpha=0.9)
                 ax.axhline(_s1_mm, color=_ACC, linewidth=1.2, linestyle="--", alpha=0.9)
                 ax.axvspan(-_roi_mm, _roi_mm, color=_ACC, alpha=0.15)
+                # mark the depth that feeds the sinogram panel
+                _sino_mm = _sino_row * MM_PER_SLICE_Y
+                ax.axhline(_sino_mm, color="white", linewidth=0.8, linestyle=":", alpha=0.7)
                 _cbar(fig, im, ax)
 
                 # ── bottom-right: depth dose ───────────────────────────────
