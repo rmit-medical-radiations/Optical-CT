@@ -1522,7 +1522,17 @@ class ScanWorker(QObject):
                 if self._abort:
                     self.finished.emit(False, "Scan aborted by user"); return
                 # Save acquisition parameters so the post-scan can validate them
-                meta = {"step_deg": degree_increment, "num_positions": num_positions}
+                meta = {
+                    "app_version":    APP_VERSION,
+                    "pre_scan_date":  time.strftime("%Y-%m-%d"),
+                    "pre_scan_time":  time.strftime("%H:%M:%S"),
+                    "step_deg":       degree_increment,
+                    "num_positions":  num_positions,
+                    "oct_stack":      oct_stack,
+                    "dark_stack":     dark_stack,
+                    "flat_stack":     flat_stack,
+                    "settle_ms":      cfg["settle_ms"],
+                }
                 (pre_dir.parent / "scan_meta.json").write_text(json.dumps(meta, indent=2))
                 self.log.emit("✓ Pre-irradiation scan complete — irradiate the dosimeter, "
                               "then return for the post-irradiation session")
@@ -1822,6 +1832,23 @@ class ReconWorker(QObject):
                 fig.savefig(str(Path(dose_dir) / f"profile_{y:04d}.png"), dpi=150)
                 plt.close(fig)
                 self.progress.emit(85 + int(15 * y / Y))
+
+            # Save reconstruction parameters alongside results
+            recon_cfg = {
+                "app_version":    APP_VERSION,
+                "recon_date":     time.strftime("%Y-%m-%d"),
+                "recon_time":     time.strftime("%H:%M:%S"),
+                "degree_increment": degree_increment,
+                "crop_cx":        crop_cx,
+                "crop_top":       crop_top,
+                "crop_extent":    crop_extent,
+                "sample_top":     sample_top,
+                "sample_height":  sample_height,
+                "mm_per_slice_y": MM_PER_SLICE_Y,
+                "mm_per_pixel_xz": MM_PER_PIXEL_XZ,
+            }
+            (Path(depth_dose_dir) / "recon_config.json").write_text(
+                json.dumps(recon_cfg, indent=2))
 
             self.progress.emit(100)
             self.finished.emit(True, "Reconstruction complete")
