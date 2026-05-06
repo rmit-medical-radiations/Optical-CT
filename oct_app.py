@@ -3142,6 +3142,7 @@ class MainWindow(QMainWindow):
         depth_dose_dir = str(scan_dir / "depth-dose")
 
         cfg = dict(
+            scan_name      = scan_dir.name,
             image_dir      = str(scan_dir / "subtracted"),
             reconstruct_dir = recon_dir,
             dose_dir       = dose_dir,
