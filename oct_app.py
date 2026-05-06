@@ -57,7 +57,7 @@ from PyQt6.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsItem, QGraphicsLineItem,
     QDialog, QListWidget, QListWidgetItem, QComboBox, QMessageBox, QFormLayout,
     QLineEdit, QCheckBox, QRadioButton, QTabWidget, QDoubleSpinBox, QSplitter, QFrame,
-    QScrollArea, QTextEdit
+    QScrollArea, QTextEdit, QStackedWidget
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -2025,8 +2025,9 @@ class ExportDialog(QDialog):
 
 class StartupDialog(QDialog):
     """
-    Shown once at launch so the user picks the session workflow.
-    chosen_mode is set to one of: "pre", "post", "reconstruct", "view_dose", "export".
+    Two-page launch dialog.
+    Page 0: workflow card selection.
+    Page 1: scan selection (all modes except 'pre').
     """
 
     _MODES = [
@@ -2042,9 +2043,20 @@ class StartupDialog(QDialog):
          "Copy a scan to a USB drive\nor local folder"),
     ]
 
+    # Filter function per mode: Path → bool
+    _SCAN_FILTER = {
+        "post":        lambda p: (p / "pre").is_dir() and bool(list((p / "pre").glob("*.png"))),
+        "reconstruct": lambda p: (p / "subtracted").is_dir(),
+        "view_dose":   lambda p: (p / "depth_dose" / "depth_dose.xlsx").exists(),
+        "export":      lambda p: True,
+    }
+
     def __init__(self):
         super().__init__()
         self.chosen_mode: Optional[str] = None
+        self.chosen_scan: Optional[Path] = None
+        self._pending_mode: Optional[str] = None
+
         self.setWindowTitle(APP_TITLE)
         self.setWindowFlags(
             Qt.WindowType.Dialog |
@@ -2052,38 +2064,86 @@ class StartupDialog(QDialog):
             Qt.WindowType.WindowCloseButtonHint
         )
         self.setModal(True)
+        self.setMinimumWidth(500)
 
         root = QVBoxLayout(self)
-        root.setSpacing(18)
-        root.setContentsMargins(32, 28, 32, 28)
+        root.setSpacing(0)
+        root.setContentsMargins(0, 0, 0, 0)
 
-        hdr = QLabel(f"{APP_TITLE}")
+        # ── Shared header ──────────────────────────────────────────────────
+        hdr_widget = QWidget()
+        hdr_widget.setStyleSheet(f"background: {PANEL_BG};")
+        hdr_lay = QVBoxLayout(hdr_widget)
+        hdr_lay.setContentsMargins(32, 24, 32, 12)
+        hdr_lay.setSpacing(4)
+
+        hdr = QLabel(APP_TITLE)
         hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hdr.setStyleSheet(
             f"font-size:16px; font-weight:bold; color:{ACCENT}; letter-spacing:2px;"
             f" border:none; background:transparent;"
         )
-        root.addWidget(hdr)
+        hdr_lay.addWidget(hdr)
 
-        prompt = QLabel("What would you like to do?")
-        prompt.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        prompt.setStyleSheet(
+        self._sub_lbl = QLabel("What would you like to do?")
+        self._sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._sub_lbl.setStyleSheet(
             f"color:{TEXT_DIM}; font-size:12px; border:none; background:transparent;"
         )
-        root.addWidget(prompt)
+        hdr_lay.addWidget(self._sub_lbl)
+        root.addWidget(hdr_widget)
 
+        # ── Stacked pages ─────────────────────────────────────────────────
+        self._stack = QStackedWidget()
+        root.addWidget(self._stack, 1)
+
+        # Page 0: workflow cards
+        cards_page = QWidget()
+        cp_lay = QVBoxLayout(cards_page)
+        cp_lay.setContentsMargins(32, 16, 32, 24)
+        cp_lay.setSpacing(10)
         grid = QGridLayout()
         grid.setSpacing(10)
         for i, (mode, title, desc) in enumerate(self._MODES):
             grid.addWidget(self._make_card(mode, title, desc), i // 3, i % 3)
-        root.addLayout(grid)
-
+        cp_lay.addLayout(grid)
         ver = QLabel(f"v{APP_VERSION}")
         ver.setAlignment(Qt.AlignmentFlag.AlignRight)
         ver.setStyleSheet(
             f"color:{TEXT_DIM}; font-size:10px; border:none; background:transparent;"
         )
-        root.addWidget(ver)
+        cp_lay.addWidget(ver)
+        self._stack.addWidget(cards_page)
+
+        # Page 1: scan selection
+        scan_page = QWidget()
+        sp_lay = QVBoxLayout(scan_page)
+        sp_lay.setContentsMargins(32, 16, 32, 24)
+        sp_lay.setSpacing(10)
+
+        self._scan_list = QListWidget()
+        self._scan_list.setAlternatingRowColors(False)
+        self._scan_list.itemDoubleClicked.connect(self._confirm_scan)
+        sp_lay.addWidget(self._scan_list, 1)
+
+        self._no_scans_lbl = QLabel("")
+        self._no_scans_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._no_scans_lbl.setStyleSheet(f"color:{TEXT_DIM}; font-size:11px;")
+        self._no_scans_lbl.setVisible(False)
+        sp_lay.addWidget(self._no_scans_lbl)
+
+        btn_row = QHBoxLayout()
+        back_btn = QPushButton("← Back")
+        back_btn.clicked.connect(self._go_back)
+        self._continue_btn = QPushButton("Continue →")
+        self._continue_btn.setDefault(True)
+        self._continue_btn.clicked.connect(self._confirm_scan)
+        btn_row.addWidget(back_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(self._continue_btn)
+        sp_lay.addLayout(btn_row)
+
+        self._stack.addWidget(scan_page)
 
     def _make_card(self, mode: str, title: str, desc: str) -> QFrame:
         card = QFrame()
@@ -2122,7 +2182,51 @@ class StartupDialog(QDialog):
         return card
 
     def _choose(self, mode: str):
-        self.chosen_mode = mode
+        if mode == "pre":
+            self.chosen_mode = "pre"
+            self.accept()
+            return
+
+        # Populate the scan list for this mode
+        self._pending_mode = mode
+        filt = self._SCAN_FILTER[mode]
+        scans = []
+        if SCANS_DIR.exists():
+            scans = sorted(
+                [p for p in SCANS_DIR.iterdir() if p.is_dir() and filt(p)],
+                reverse=True,
+            )
+
+        self._scan_list.clear()
+        for p in scans:
+            item = QListWidgetItem(p.name)
+            item.setData(Qt.ItemDataRole.UserRole, p)
+            self._scan_list.addItem(item)
+
+        has_scans = bool(scans)
+        self._scan_list.setVisible(has_scans)
+        self._no_scans_lbl.setVisible(not has_scans)
+        if not has_scans:
+            self._no_scans_lbl.setText("No matching scans found.")
+        else:
+            self._scan_list.setCurrentRow(0)
+
+        self._continue_btn.setEnabled(has_scans)
+
+        mode_label = next(label for m, label, _ in self._MODES if m == mode)
+        self._sub_lbl.setText(f"Select scan for: {mode_label}")
+        self._stack.setCurrentIndex(1)
+
+    def _go_back(self):
+        self._sub_lbl.setText("What would you like to do?")
+        self._stack.setCurrentIndex(0)
+
+    def _confirm_scan(self):
+        item = self._scan_list.currentItem()
+        if item is None:
+            return
+        self.chosen_mode = self._pending_mode
+        self.chosen_scan = item.data(Qt.ItemDataRole.UserRole)
         self.accept()
 
     def closeEvent(self, e):
@@ -2135,9 +2239,10 @@ class StartupDialog(QDialog):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
-    def __init__(self, mode: str = "pre"):
+    def __init__(self, mode: str = "pre", scan: Optional[Path] = None):
         super().__init__()
         self._startup_mode = mode
+        self._startup_scan = scan
         self.setWindowTitle(f"{APP_TITLE}  v{APP_VERSION}")
         # Start maximised so the layout fills whatever screen is available
         self.showMaximized()
@@ -2172,7 +2277,7 @@ class MainWindow(QMainWindow):
         self._probe_camera()   # immediate first check
 
         # Apply startup mode after event loop starts so dialogs open on top
-        QTimer.singleShot(0, lambda: self._apply_startup_mode(self._startup_mode))
+        QTimer.singleShot(0, lambda: self._apply_startup_mode(self._startup_mode, self._startup_scan))
 
     # ── UI construction ──────────────────────────────────────────────────────
 
@@ -2871,38 +2976,54 @@ class MainWindow(QMainWindow):
 
     # ── Startup mode ──────────────────────────────────────────────────────────
 
-    def _apply_startup_mode(self, mode: str):
+    def _apply_startup_mode(self, mode: str, scan: Optional[Path] = None):
         if mode == "post":
             self.scan_mode_combo.setCurrentIndex(1)
+            if scan is not None:
+                for i in range(self.pre_scan_combo.count()):
+                    if self.pre_scan_combo.itemData(i) == scan:
+                        self.pre_scan_combo.setCurrentIndex(i)
+                        break
         elif mode == "reconstruct":
+            if scan is not None:
+                self._populate_scan_selector(select_path=scan)
             self.recon_btn.setFocus()
         elif mode == "view_dose":
+            if scan is not None:
+                dose_path = scan / "depth_dose" / "depth_dose.xlsx"
+                if dose_path.exists():
+                    self._load_depth_dose_path(dose_path)
+                    return
             self._load_depth_dose_file()
         elif mode == "export":
-            ExportDialog(self, current_scan=self.scan_selector.currentData()).exec()
+            ExportDialog(self, current_scan=scan or self.scan_selector.currentData()).exec()
         # "pre" is the default combo state — nothing extra needed
 
+    def _load_depth_dose_path(self, path: Path):
+        """Load a specific depth_dose file and plot it."""
+        try:
+            import pandas as pd
+            df = (pd.read_excel(str(path)) if path.suffix == ".xlsx"
+                  else pd.read_csv(str(path)))
+            depth_mm    = df["depth_mm"].to_numpy()
+            rel_dose    = df["rel_dose"].to_numpy()
+            dose_signal = df["dose_signal"].to_numpy() if "dose_signal" in df.columns else None
+            title = path.parts[-3] if len(path.parts) >= 3 else path.stem
+            self.plot.set_data(depth_mm, rel_dose, dose_signal, title=f"Depth Dose — {title}")
+            self._log(f"✓ Loaded depth dose: {path}")
+        except Exception as e:
+            self._log(f"✗ Failed to load depth dose: {e}")
+            QMessageBox.critical(self, "Load error", str(e))
+
     def _load_depth_dose_file(self):
-        """Load a depth_dose.xlsx produced by a prior reconstruction and plot it."""
+        """Open a file picker then load the chosen depth dose file."""
         path, _ = QFileDialog.getOpenFileName(
             self, "Open depth dose file", str(SCANS_DIR),
             "Excel files (*.xlsx);;CSV files (*.csv);;All files (*)"
         )
         if not path:
             return
-        try:
-            import pandas as pd
-            df = (pd.read_excel(path) if path.endswith(".xlsx")
-                  else pd.read_csv(path))
-            depth_mm    = df["depth_mm"].to_numpy()
-            rel_dose    = df["rel_dose"].to_numpy()
-            dose_signal = df["dose_signal"].to_numpy() if "dose_signal" in df.columns else None
-            title = Path(path).parts[-3] if len(Path(path).parts) >= 3 else Path(path).stem
-            self.plot.set_data(depth_mm, rel_dose, dose_signal, title=f"Depth Dose — {title}")
-            self._log(f"✓ Loaded depth dose: {path}")
-        except Exception as e:
-            self._log(f"✗ Failed to load depth dose: {e}")
-            QMessageBox.critical(self, "Load error", str(e))
+        self._load_depth_dose_path(Path(path))
 
     # ── Log ───────────────────────────────────────────────────────────────────
 
@@ -2932,7 +3053,7 @@ def main():
     if dlg.exec() != QDialog.DialogCode.Accepted:
         sys.exit(0)
 
-    w = MainWindow(mode=dlg.chosen_mode)
+    w = MainWindow(mode=dlg.chosen_mode, scan=dlg.chosen_scan)
     w.show()
     sys.exit(app.exec())
 
