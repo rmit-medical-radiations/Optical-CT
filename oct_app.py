@@ -1496,6 +1496,13 @@ class ScanWorker(QObject):
             if self._abort:
                 self.finished.emit(False, "Aborted"); return
 
+            # Snapshot the calibration frames used for this scan
+            calib_dest = pre_dir.parent / "calibration"
+            calib_dest.mkdir(exist_ok=True)
+            for src, name in ((dark_path, "dark.npy"), (flat_path, "flat.npy")):
+                if os.path.exists(src):
+                    shutil.copy2(src, calib_dest / name)
+
             num_positions = int(360 / degree_increment)
 
             # ── Phase 2: Pre-irradiation scan ────────────────────────────────
@@ -1878,15 +1885,15 @@ class ExportWorker(QObject):
             dest = self.dest_root / self.scan_dir.name
             if dest.exists():
                 dest = self.dest_root / f"{self.scan_dir.name}_{int(time.time())}"
+            dest.mkdir(parents=True, exist_ok=True)
+
             files = [p for p in self.scan_dir.rglob("*") if p.is_file()]
             total = max(1, len(files))
-            dest.mkdir(parents=True, exist_ok=True)
             for i, src in enumerate(files):
-                rel = src.relative_to(self.scan_dir)
-                dst = dest / rel
+                dst = dest / src.relative_to(self.scan_dir)
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
-                self.progress.emit(int(100 * (i+1) / total))
+                self.progress.emit(int(100 * (i + 1) / total))
             self.finished.emit(True, f"Exported to: {dest}")
         except Exception as e:
             self.finished.emit(False, f"Export failed: {e}")
