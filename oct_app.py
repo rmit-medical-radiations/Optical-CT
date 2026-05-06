@@ -1401,6 +1401,9 @@ class ScanWorker(QObject):
                 lamp_off()
                 if self._abort:
                     self.finished.emit(False, "Scan aborted by user"); return
+                # Save acquisition parameters so the post-scan can validate them
+                meta = {"step_deg": degree_increment, "num_positions": num_positions}
+                (pre_dir.parent / "scan_meta.json").write_text(json.dumps(meta, indent=2))
                 self.log.emit("✓ Pre-irradiation scan complete — irradiate the dosimeter, "
                               "then return for the post-irradiation session")
                 self.finished.emit(True, "Pre-scan complete — ready for irradiation")
@@ -2291,6 +2294,7 @@ class MainWindow(QMainWindow):
         self.auto_axis_btn.clicked.connect(self._auto_detect_axis)
         self.scan_selector.currentIndexChanged.connect(self._on_scan_selected)
         self.scan_mode_combo.currentIndexChanged.connect(self._on_scan_mode_changed)
+        self.pre_scan_combo.currentIndexChanged.connect(self._on_pre_scan_selected)
         self.pre_scan_refresh_btn.clicked.connect(self._populate_pre_scan_combo)
         self.real_camera_cb.stateChanged.connect(lambda _: self._probe_camera())
         self._populate_scan_selector()
@@ -2330,6 +2334,27 @@ class MainWindow(QMainWindow):
             for p in scans:
                 self.pre_scan_combo.addItem(p.name, userData=p)
         self.pre_scan_combo.blockSignals(False)
+        self._on_pre_scan_selected()   # sync spinbox with current selection
+
+    @staticmethod
+    def _read_pre_scan_meta(scan_dir: Path) -> dict:
+        meta_path = scan_dir / "scan_meta.json"
+        if meta_path.exists():
+            try:
+                return json.loads(meta_path.read_text())
+            except Exception:
+                pass
+        return {}
+
+    def _on_pre_scan_selected(self):
+        """When the user picks a pre-scan, auto-populate step degrees from its metadata."""
+        path = self.pre_scan_combo.currentData()
+        if path is None:
+            return
+        meta = self._read_pre_scan_meta(path)
+        step = meta.get("step_deg")
+        if step is not None:
+            self.step_spin.setValue(step)
 
     def _on_crop_spinbox_changed(self):
         if self._updating_overlays:
@@ -2459,6 +2484,21 @@ class MainWindow(QMainWindow):
             if not pre_dir.is_dir() or not list(pre_dir.glob("*.png")):
                 QMessageBox.warning(self, "Post scan", f"No pre-scan images found in:\n{pre_dir}")
                 return
+            # Validate step degrees against the pre-scan metadata
+            meta = self._read_pre_scan_meta(pre_scan_dir)
+            pre_step = meta.get("step_deg")
+            if pre_step is not None and pre_step != self.step_spin.value():
+                QMessageBox.critical(
+                    self, "Step angle mismatch",
+                    f"The pre-scan used {pre_step}° steps "
+                    f"({meta.get('num_positions')} positions).\n"
+                    f"The post-scan is set to {self.step_spin.value()}°.\n\n"
+                    "The step angle must match exactly for correct subtraction.\n"
+                    "Correct the Step (deg) spinbox and try again."
+                )
+                return
+            if pre_step is None:
+                self._log("⚠ No scan_meta.json found — cannot verify step angle matches pre-scan")
             # Clear post/ and subtracted/ — pre/ is kept
             for d in (post_dir, subtracted_dir):
                 if d.exists():
