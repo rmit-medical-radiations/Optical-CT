@@ -56,7 +56,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QSpinBox, QProgressBar, QGroupBox, QFileDialog,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsItem, QGraphicsLineItem,
     QDialog, QListWidget, QListWidgetItem, QComboBox, QMessageBox, QFormLayout,
-    QLineEdit, QCheckBox, QTabWidget, QDoubleSpinBox, QSplitter, QFrame,
+    QLineEdit, QCheckBox, QRadioButton, QTabWidget, QDoubleSpinBox, QSplitter, QFrame,
     QScrollArea, QTextEdit
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
