@@ -1832,12 +1832,124 @@ class ExportDialog(QDialog):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Startup workflow chooser
+# ──────────────────────────────────────────────────────────────────────────────
+
+class StartupDialog(QDialog):
+    """
+    Shown once at launch so the user picks the session workflow.
+    chosen_mode is set to one of: "pre", "post", "reconstruct", "view_dose", "export".
+    """
+
+    _MODES = [
+        ("pre",         "Pre-irradiation scan",
+         "Capture dark, flat, and pre-\nirradiation sample images"),
+        ("post",        "Post-irradiation scan",
+         "Capture dark, flat, and post-\nirradiation images · compute ΔA"),
+        ("reconstruct", "Reconstruct",
+         "Run FBP reconstruction on a\ncompleted pre+post scan"),
+        ("view_dose",   "View depth dose",
+         "Load and display the depth dose\nfrom an existing reconstruction"),
+        ("export",      "Export scan",
+         "Copy a scan to a USB drive\nor local folder"),
+    ]
+
+    def __init__(self):
+        super().__init__()
+        self.chosen_mode: Optional[str] = None
+        self.setWindowTitle(APP_TITLE)
+        self.setWindowFlags(
+            Qt.WindowType.Dialog |
+            Qt.WindowType.WindowTitleHint |
+            Qt.WindowType.WindowCloseButtonHint
+        )
+        self.setModal(True)
+
+        root = QVBoxLayout(self)
+        root.setSpacing(18)
+        root.setContentsMargins(32, 28, 32, 28)
+
+        hdr = QLabel(f"{APP_TITLE}")
+        hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hdr.setStyleSheet(
+            f"font-size:16px; font-weight:bold; color:{ACCENT}; letter-spacing:2px;"
+            f" border:none; background:transparent;"
+        )
+        root.addWidget(hdr)
+
+        prompt = QLabel("What would you like to do?")
+        prompt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        prompt.setStyleSheet(
+            f"color:{TEXT_DIM}; font-size:12px; border:none; background:transparent;"
+        )
+        root.addWidget(prompt)
+
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        for i, (mode, title, desc) in enumerate(self._MODES):
+            grid.addWidget(self._make_card(mode, title, desc), i // 3, i % 3)
+        root.addLayout(grid)
+
+        ver = QLabel(f"v{APP_VERSION}")
+        ver.setAlignment(Qt.AlignmentFlag.AlignRight)
+        ver.setStyleSheet(
+            f"color:{TEXT_DIM}; font-size:10px; border:none; background:transparent;"
+        )
+        root.addWidget(ver)
+
+    def _make_card(self, mode: str, title: str, desc: str) -> QFrame:
+        card = QFrame()
+        card.setFixedSize(210, 100)
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.setStyleSheet(f"""
+            QFrame {{
+                background-color: {PANEL_BG};
+                border: 1px solid {BORDER_CLR};
+                border-radius: 6px;
+            }}
+            QFrame:hover {{
+                border-color: {ACCENT};
+                background-color: #0d2e25;
+            }}
+        """)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(5)
+
+        t = QLabel(title)
+        t.setStyleSheet(
+            f"color:{ACCENT}; font-size:12px; font-weight:bold;"
+            f" background:transparent; border:none;"
+        )
+        lay.addWidget(t)
+
+        d = QLabel(desc)
+        d.setStyleSheet(
+            f"color:{TEXT_DIM}; font-size:10px; background:transparent; border:none;"
+        )
+        d.setWordWrap(True)
+        lay.addWidget(d, 1)
+
+        card.mousePressEvent = lambda _e, m=mode: self._choose(m)
+        return card
+
+    def _choose(self, mode: str):
+        self.chosen_mode = mode
+        self.accept()
+
+    def closeEvent(self, e):
+        self.reject()
+        e.accept()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Main window
 # ──────────────────────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, mode: str = "pre"):
         super().__init__()
+        self._startup_mode = mode
         self.setWindowTitle(APP_TITLE)
         # Start maximised so the layout fills whatever screen is available
         self.showMaximized()
@@ -1866,10 +1978,14 @@ class MainWindow(QMainWindow):
 
         # Keep USB-ethernet alive and track camera reachability
         self._probe_thread: Optional[QThread] = None
+        self._probe_worker = None
         self._ping_timer = QTimer(self)
         self._ping_timer.timeout.connect(self._probe_camera)
         self._ping_timer.start(PING_INTERVAL_MS)
         self._probe_camera()   # immediate first check
+
+        # Apply startup mode after event loop starts so dialogs open on top
+        QTimer.singleShot(0, lambda: self._apply_startup_mode(self._startup_mode))
 
     # ── UI construction ──────────────────────────────────────────────────────
 
@@ -2089,6 +2205,8 @@ class MainWindow(QMainWindow):
         pl2 = QVBoxLayout(plot_box)
         self.plot = DoseDepthPlot()
         pl2.addWidget(self.plot, 1)
+        self.load_dose_btn = QPushButton("Load depth dose…")
+        pl2.addWidget(self.load_dose_btn)
         right.addWidget(plot_box, 2)
 
         # Status log
@@ -2119,6 +2237,7 @@ class MainWindow(QMainWindow):
         self.export_btn.clicked.connect(
             lambda: ExportDialog(self, current_scan=self.scan_selector.currentData()).exec()
         )
+        self.load_dose_btn.clicked.connect(self._load_depth_dose_file)
         self.phase_bar.phase_requested.connect(self._on_phase_requested)
         self.auto_axis_btn.clicked.connect(self._auto_detect_axis)
         self.scan_selector.currentIndexChanged.connect(self._on_scan_selected)
@@ -2192,11 +2311,11 @@ class MainWindow(QMainWindow):
         if self._probe_thread and self._probe_thread.isRunning():
             return
         self._probe_thread = QThread()
-        worker = CameraProbeWorker()
-        worker.moveToThread(self._probe_thread)
-        self._probe_thread.started.connect(worker.run)
-        worker.result.connect(self._on_camera_probe)
-        worker.result.connect(self._probe_thread.quit)
+        self._probe_worker = CameraProbeWorker()   # kept alive as instance var
+        self._probe_worker.moveToThread(self._probe_thread)
+        self._probe_thread.started.connect(self._probe_worker.run)
+        self._probe_worker.result.connect(self._on_camera_probe)
+        self._probe_worker.result.connect(self._probe_thread.quit)
         self._probe_thread.start()
 
     def _on_camera_probe(self, reachable: bool):
@@ -2493,6 +2612,40 @@ class MainWindow(QMainWindow):
         if not ok and "abort" not in msg.lower() and "cancel" not in msg.lower():
             QMessageBox.critical(self, "Reconstruction error", msg)
 
+    # ── Startup mode ──────────────────────────────────────────────────────────
+
+    def _apply_startup_mode(self, mode: str):
+        if mode == "post":
+            self.scan_mode_combo.setCurrentIndex(1)
+        elif mode == "reconstruct":
+            self.recon_btn.setFocus()
+        elif mode == "view_dose":
+            self._load_depth_dose_file()
+        elif mode == "export":
+            ExportDialog(self, current_scan=self.scan_selector.currentData()).exec()
+        # "pre" is the default combo state — nothing extra needed
+
+    def _load_depth_dose_file(self):
+        """Load a depth_dose.xlsx produced by a prior reconstruction and plot it."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open depth dose file", str(SCANS_DIR),
+            "Excel files (*.xlsx);;CSV files (*.csv);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            import pandas as pd
+            df = (pd.read_excel(path) if path.endswith(".xlsx")
+                  else pd.read_csv(path))
+            depth_mm = df["depth_mm"].to_numpy()
+            rel_dose  = df["rel_dose"].to_numpy()
+            title = Path(path).parts[-3] if len(Path(path).parts) >= 3 else Path(path).stem
+            self.plot.set_data(depth_mm, rel_dose, title=f"Depth Dose — {title}")
+            self._log(f"✓ Loaded depth dose: {path}")
+        except Exception as e:
+            self._log(f"✗ Failed to load depth dose: {e}")
+            QMessageBox.critical(self, "Load error", str(e))
+
     # ── Log ───────────────────────────────────────────────────────────────────
 
     def _log(self, msg: str):
@@ -2515,7 +2668,13 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    w = MainWindow()
+    app.setStyleSheet(STYLESHEET)   # applied globally so StartupDialog inherits it
+
+    dlg = StartupDialog()
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        sys.exit(0)
+
+    w = MainWindow(mode=dlg.chosen_mode)
     w.show()
     sys.exit(app.exec())
 
