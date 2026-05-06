@@ -563,45 +563,45 @@ def find_axis_from_nozzle(img: np.ndarray) -> Optional[float]:
     """
     Estimate the axis-of-rotation X coordinate from a flat-field image.
 
-    The nozzle holder is mounted above the bright backlit background and casts
-    a dark vertical band over it.  The axis of rotation is the horizontal
-    centre of that band.
-
-    Method: take the top 20 % of the image (where the holder is visible),
-    exclude the outermost 15 % of columns on each side (frame borders), then
-    find the column with the lowest mean intensity after Gaussian smoothing.
-
-    Returns the centre X in image pixels, or None if the image is empty.
+    The nozzle holder casts a dark vertical band over the bright backlit
+    background.  Returns the centroid X of that band in image pixels, or None
+    if no clear band is found (contrast < 5 % of the local mean).
     """
     h, w = img.shape[:2]
     if h == 0 or w == 0:
         return None
 
-    # Strip containing the nozzle holder
     top_h = max(1, int(h * 0.20))
     top = img[:top_h, :].astype(np.float32)
 
-    # Exclude dark frame borders (leftmost / rightmost 15 % of columns)
     border = max(1, int(w * 0.15))
-    inner = top[:, border: w - border]   # shape: (top_h, inner_w)
+    inner = top[:, border: w - border]
     if inner.shape[1] == 0:
         return None
 
-    # Per-column mean intensity — nozzle holder → darkest vertical band
     col_means = inner.mean(axis=0)
 
-    # Smooth with a narrow Gaussian to suppress noise
     sigma = max(3.0, w * 0.01)
-    ks = int(sigma * 6) | 1          # odd kernel size
+    ks = int(sigma * 6) | 1
     half = ks // 2
     xs = np.arange(ks, dtype=np.float32) - half
     kernel = np.exp(-0.5 * (xs / sigma) ** 2)
     kernel /= kernel.sum()
     smoothed = np.convolve(col_means, kernel, mode='same')
 
-    # The darkest column is the nozzle axis (offset back by excluded border)
-    darkest_local = int(np.argmin(smoothed))
-    return float(darkest_local + border)
+    mean_val = float(smoothed.mean())
+    min_val  = float(smoothed.min())
+    contrast = (mean_val - min_val) / (mean_val + 1e-6)
+    if contrast < 0.05:
+        return None  # no clear dark band — nozzle holder not visible
+
+    # Weighted centroid of the dark region (more stable than argmin for broad bands)
+    weights = np.clip(mean_val - smoothed, 0, None)
+    if weights.sum() == 0:
+        return None
+    local_cols = np.arange(len(smoothed), dtype=np.float32)
+    centroid_local = float((weights * local_cols).sum() / weights.sum())
+    return centroid_local + border
 
 
 def ema(values, alpha=0.1):
@@ -2126,23 +2126,27 @@ class MainWindow(QMainWindow):
         ctrl_grid.addWidget(QLabel("Step (deg):"), 3, 0)
         self.step_spin = QSpinBox()
         self.step_spin.setRange(1, 30); self.step_spin.setValue(2)
+        self.step_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         ctrl_grid.addWidget(self.step_spin, 3, 1)
 
         # Stacks (rows 4-5)
         ctrl_grid.addWidget(QLabel("Oct stack:"), 4, 0)
         self.oct_stack_spin = QSpinBox()
         self.oct_stack_spin.setRange(1, 20); self.oct_stack_spin.setValue(3)
+        self.oct_stack_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         ctrl_grid.addWidget(self.oct_stack_spin, 4, 1)
 
         ctrl_grid.addWidget(QLabel("Dark/flat stack:"), 5, 0)
         self.calib_stack_spin = QSpinBox()
         self.calib_stack_spin.setRange(1, 20); self.calib_stack_spin.setValue(3)
+        self.calib_stack_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         ctrl_grid.addWidget(self.calib_stack_spin, 5, 1)
 
         ctrl_grid.addWidget(QLabel("Settle (ms):"), 6, 0)
         self.settle_spin = QSpinBox()
         self.settle_spin.setRange(100, 2000); self.settle_spin.setValue(300)
         self.settle_spin.setSingleStep(100)
+        self.settle_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.settle_spin.setToolTip("Wait after motor stops before capturing (reduce to speed up scan)")
         ctrl_grid.addWidget(self.settle_spin, 6, 1)
 
@@ -2218,6 +2222,7 @@ class MainWindow(QMainWindow):
         rg.addWidget(QLabel("Crop centre X:"), 1, 0)
         self.crop_cx_spin = QSpinBox()
         self.crop_cx_spin.setRange(1, 9999); self.crop_cx_spin.setValue(995)
+        self.crop_cx_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         rg.addWidget(self.crop_cx_spin, 1, 1)
         self.auto_axis_btn = QPushButton("Auto-detect")
         self.auto_axis_btn.setToolTip("Detect axis of rotation from nozzle edges in current frame")
@@ -2226,21 +2231,25 @@ class MainWindow(QMainWindow):
         rg.addWidget(QLabel("Crop top Y:"), 2, 0)
         self.crop_top_spin = QSpinBox()
         self.crop_top_spin.setRange(0, 9999); self.crop_top_spin.setValue(270)
+        self.crop_top_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         rg.addWidget(self.crop_top_spin, 2, 1)
 
         rg.addWidget(QLabel("Crop extent (px):"), 3, 0)
         self.crop_extent_spin = QSpinBox()
         self.crop_extent_spin.setRange(64, 4096); self.crop_extent_spin.setValue(700)
+        self.crop_extent_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         rg.addWidget(self.crop_extent_spin, 3, 1)
 
         rg.addWidget(QLabel("Sample top (px):"), 4, 0)
         self.sample_top_spin = QSpinBox()
         self.sample_top_spin.setRange(0, 9999); self.sample_top_spin.setValue(0)
+        self.sample_top_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         rg.addWidget(self.sample_top_spin, 4, 1)
 
         rg.addWidget(QLabel("Sample height (px):"), 5, 0)
         self.sample_h_spin = QSpinBox()
         self.sample_h_spin.setRange(1, 9999); self.sample_h_spin.setValue(450)
+        self.sample_h_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         rg.addWidget(self.sample_h_spin, 5, 1)
 
         self.force_vol_cb = QCheckBox("Force new volume")
@@ -2427,7 +2436,9 @@ class MainWindow(QMainWindow):
         img = np.load(flat_path)
         cx = find_axis_from_nozzle(img)
         if cx is None:
-            self._log("⚠ Axis detection failed — could not locate nozzle in top of image.")
+            self._log("⚠ Axis detection failed — nozzle holder not clearly visible in "
+                      "the top of the flat field. Ensure the nozzle is mounted and the "
+                      "flat was captured with the lamp on.")
             return
         cx_int = int(round(cx))
         self._log(f"✓ Axis detected at x={cx_int} px")
