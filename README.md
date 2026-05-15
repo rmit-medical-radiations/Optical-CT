@@ -31,8 +31,6 @@ The Raspberry Pi and control machine must be on the same network.  The Pi's IP a
 | `launch_oct.sh` | Convenience launcher for the desktop app (activates conda env) |
 | `lamp_control.py` | CLI utility to toggle the lamp via FT232H; used for manual testing |
 | `motor_control.py` | CLI utility to jog the stepper motor; used for manual testing |
-| `scan_sample.py` | Standalone scan script (superseded by `oct_app.py`) |
-| `compute_dose_profile.py` | Standalone FBP + dose profile script (superseded by `oct_app.py`) |
 | `live_preview.py` | Standalone camera preview script |
 | `capture_calibration_shots.py` | Captures ChArUco calibration images for lens correction |
 | `charuco_board.py` | Generates the printable ChArUco calibration board |
