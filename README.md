@@ -142,7 +142,10 @@ Reconstruction uses `skimage.transform.iradon` with a Hann filter.  The volume h
 - Lateral: 43 mm / 454 px ≈ 0.095 mm/px
 - Depth: 0.1 mm/slice
 
-The dose centroid is auto-detected from the brightest 20 % of slices in the sample ROI using a weighted centroid above the 50th-percentile threshold.  This handles beams displaced up to ~6 mm from the geometric axis.  The centroid offset is stored in `depth-dose/recon_config.json`.
+The dose centroid is auto-detected from the brightest 20 % of slices in the sample ROI using a weighted centroid above the 50th-percentile threshold.  This handles beams displaced up to ~6 mm from the geometric axis.  The centroid offset is stored in `depth-dose/recon_config.json` as `dose_centroid_x_mm` and `dose_centroid_z_mm`:
+
+- **X** — left/right displacement as seen in the camera image (negative = left of axis)
+- **Z** — front/back displacement along the camera line of sight (negative = closer to the camera than the rotation axis)
 
 ---
 
