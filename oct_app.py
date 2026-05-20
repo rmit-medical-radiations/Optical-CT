@@ -1336,10 +1336,10 @@ class PhaseButtonBar(QWidget):
         "④ Post-irradiation scan",
     ]
     HINTS = [
-        "Turn lamp OFF and remove sample",
-        "Turn lamp ON with no sample",
-        "Place sample, lamp ON",
-        "Place irradiated sample, lamp ON",
+        "Remove sample — lamp turns off automatically",
+        "Ensure no sample in beam — lamp turns on automatically",
+        "Place sample in beam — lamp turns on automatically",
+        "Place irradiated sample in beam — lamp turns on automatically",
     ]
     BTN_LABELS = [
         "Capture dark",
