@@ -295,8 +295,9 @@ pdf.step(3, 'Check "Real camera" and "Real stepper" checkboxes in the Scan panel
          'Leave both unchecked only for off-line testing with the camera simulator.')
 pdf.step(4, 'The Lamp button in the Scan panel defaults to ON.',
          'It toggles the lamp directly from the app and turns amber when the lamp is '
-         'lit.  The button is disabled automatically during a scan.  '
-         'Turn the lamp OFF before capturing dark frames (phase 1).')
+         'lit.  During a scan the lamp is controlled automatically — turned off for '
+         'dark frames, on for flat and projection captures — and the button updates '
+         'to reflect the current state.')
 
 pdf.note(
     'On first run the app creates a config/ folder alongside oct_app.py and stores '
@@ -404,22 +405,21 @@ pdf.set_text_color(*C_TEXT)
 
 phases_pre = [
     ('(1) Dark capture',
-     'LAMP OFF, no sample.',
-     'Click the Lamp button in the Scan panel to turn the lamp OFF (button turns grey).  '
-     'Remove the dosimeter from the beam path.  '
-     'Click "Capture dark".  The camera captures dark frames to characterise '
-     'read-out noise and hot pixels.'),
+     'Lamp OFF — automatic.',
+     'Remove the dosimeter from the beam path, then click "Capture dark".  '
+     'The app turns the lamp off automatically before capturing dark frames '
+     'to characterise read-out noise and hot pixels.'),
     ('(2) Flat capture',
-     'LAMP ON, no sample.',
-     'Click the Lamp button to turn the lamp ON (button turns amber).  '
-     'Ensure no sample is in the beam.  '
-     'Click "Capture flat".  The camera captures the bare beam profile (I0).'),
+     'Lamp ON — automatic.',
+     'Ensure no sample is in the beam, then click "Capture flat".  '
+     'The app turns the lamp on automatically.  '
+     'The camera captures the bare beam profile (I0).'),
     ('(3) Pre-irradiation scan',
-     'LAMP ON, dosimeter in place.',
+     'Lamp ON — automatic.',
      'Place the dosimeter on the rotation stage.  '
      'Click "Begin pre-scan".  The motor steps through 360° and a projection '
      'image is captured at each angle.  Do not disturb the setup.  '
-     'The Lamp button is disabled during the scan.'),
+     'The lamp turns off automatically when the scan completes.'),
     ('(4) Post-irradiation scan',
      'Skipped in this session.',
      'This phase is automatically skipped for a pre-scan session.'),

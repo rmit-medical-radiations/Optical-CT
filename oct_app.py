@@ -1487,6 +1487,7 @@ class ScanWorker(QObject):
     phase_skipped  = pyqtSignal(int)
     scan_progress  = pyqtSignal(int)
     image_ready    = pyqtSignal(object)
+    lamp_changed   = pyqtSignal(bool)   # True=on, False=off
     log            = pyqtSignal(str)
     finished       = pyqtSignal(bool, str)
 
@@ -1505,6 +1506,13 @@ class ScanWorker(QObject):
     def abort(self):
         self._abort = True
         self._gate.set()   # unblock any waiting gate
+
+    def _set_lamp(self, on: bool):
+        if on:
+            lamp_on()
+        else:
+            lamp_off()
+        self.lamp_changed.emit(on)
 
     def _wait_for_user(self, phase_idx: int) -> bool:
         """Emit phase_ready, then block until proceed() or abort()."""
@@ -1573,11 +1581,11 @@ class ScanWorker(QObject):
             )
 
             if force_dark or not dark_exists:
-                self.log.emit("Waiting: turn lamp OFF and remove sample, then click ① Capture dark")
+                self.log.emit("Waiting: remove sample from beam path, then click ① Capture dark")
                 if not self._wait_for_user(0):
                     self.finished.emit(False, "Aborted"); return
                 self.phase_running.emit(0)
-                lamp_off()
+                self._set_lamp(False)
                 self.log.emit("Capturing dark frame (lamp OFF)…")
             else:
                 self.phase_running.emit(0)
@@ -1593,11 +1601,11 @@ class ScanWorker(QObject):
 
             # ── Phase 1: Flat ─────────────────────────────────────────────────
             if force_flat or not flat_exists:
-                self.log.emit("Waiting: turn lamp ON with no sample, then click ② Capture flat")
+                self.log.emit("Waiting: ensure no sample in beam, then click ② Capture flat")
                 if not self._wait_for_user(1):
                     self.finished.emit(False, "Aborted"); return
                 self.phase_running.emit(1)
-                lamp_on()
+                self._set_lamp(True)
                 self.log.emit("Capturing flat frame (lamp ON, no sample)…")
             else:
                 self.phase_running.emit(1)
@@ -1627,20 +1635,20 @@ class ScanWorker(QObject):
                 self.log.emit("Post session — using saved pre-irradiation images")
             else:
                 # scan_mode == "pre"
-                self.log.emit("Waiting: place sample, lamp ON — click ③ to begin pre-irradiation scan")
+                self.log.emit("Waiting: place sample in beam — click ③ to begin pre-irradiation scan")
                 if not self._wait_for_user(2):
                     self.finished.emit(False, "Aborted"); return
 
                 self.phase_running.emit(2)
                 self.log.emit("Pre-irradiation scan…")
-                lamp_on()
+                self._set_lamp(True)
                 ok = self._run_rotation(num_positions, degree_increment, oct_stack,
                                         pre_dir, map1, map2, use_real_serial,
                                         progress_offset=0, progress_scale=1.0)
                 if not ok:
                     return
                 self.phase_done.emit(2)
-                lamp_off()
+                self._set_lamp(False)
                 if self._abort:
                     self.finished.emit(False, "Scan aborted by user"); return
                 # Save acquisition parameters so the post-scan can validate them
@@ -1662,20 +1670,20 @@ class ScanWorker(QObject):
                 return
 
             # ── Phase 3: Post-irradiation scan ────────────────────────────────
-            self.log.emit("Waiting: place irradiated sample, lamp ON — then click ④")
+            self.log.emit("Waiting: place irradiated sample in beam — then click ④")
             if not self._wait_for_user(3):
                 self.finished.emit(False, "Aborted"); return
 
             self.phase_running.emit(3)
             self.log.emit("Post-irradiation scan…")
-            lamp_on()
+            self._set_lamp(True)
             ok = self._run_rotation(num_positions, degree_increment, oct_stack,
                                     post_dir, map1, map2, use_real_serial,
                                     progress_offset=0, progress_scale=0.8)
             if not ok:
                 return
             self.phase_done.emit(3)
-            lamp_off()
+            self._set_lamp(False)
 
             if self._abort:
                 self.finished.emit(False, "Scan aborted by user"); return
@@ -1690,7 +1698,7 @@ class ScanWorker(QObject):
             self.finished.emit(True, "Post-scan and subtraction complete")
 
         except Exception as e:
-            lamp_off()
+            self._set_lamp(False)
             self.finished.emit(False, f"Scan error: {e}\n{traceback.format_exc()}")
 
     def _save_image(self, img, i, angle, image_dir, map1, map2):
@@ -3157,6 +3165,7 @@ class MainWindow(QMainWindow):
         self._worker.phase_skipped.connect(self._on_phase_skipped)
         self._worker.scan_progress.connect(self.scan_progress.setValue)
         self._worker.image_ready.connect(self.preview.set_frame)
+        self._worker.lamp_changed.connect(self._on_worker_lamp_changed)
         self._worker.log.connect(self._log)
         self._worker.finished.connect(self._scan_finished)
         self._worker.finished.connect(self._thread.quit)
@@ -3235,6 +3244,13 @@ class MainWindow(QMainWindow):
         else:
             lamp_off()
             self.lamp_btn.setText("Lamp OFF")
+
+    def _on_worker_lamp_changed(self, on: bool):
+        """Sync the lamp button when the scan worker controls the lamp automatically."""
+        self.lamp_btn.blockSignals(True)
+        self.lamp_btn.setChecked(on)
+        self.lamp_btn.setText("☀  Lamp ON" if on else "Lamp OFF")
+        self.lamp_btn.blockSignals(False)
 
     # ── Scan selector ─────────────────────────────────────────────────────────
 
