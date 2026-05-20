@@ -300,6 +300,23 @@ pdf.note(
     'File → Save current settings as defaults.'
 )
 
+pdf.subsection('Camera settings')
+pdf.body(
+    'The camera runs with auto-exposure disabled.  A fixed shutter speed is essential '
+    'because Beer-Lambert law requires A = -log(I / I0) to be computed from images '
+    'captured under identical conditions — any exposure change between the flat frame '
+    'and a projection frame, or between the pre- and post-irradiation sessions, would '
+    'introduce a spurious ΔA signal unrelated to the dosimeter.'
+)
+pdf.body(
+    'The current shutter speed (500 ms at analogue gain 1.0) was determined empirically '
+    'for correct exposure with the installed lamp and optics.  If the lamp is replaced '
+    'or the optical path changes, recalibrate the shutter speed by adjusting '
+    'ExposureTime in camera_server.py until the flat-field image is well-exposed '
+    '(pixel values in the range 180–230 on an 8-bit scale) without saturation.',
+    indent=4
+)
+
 pdf.section('Scan parameters — what each setting controls')
 
 pdf.body('These controls appear in the Scan panel (left column) and the '
@@ -513,6 +530,91 @@ for fname, desc in outputs:
     pdf.set_text_color(*C_TEXT)
     pdf.multi_cell(CONTENT_W - 80, 5.5, desc,
                    new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+pdf.subsection('Spreadsheet columns — depth_dose.xlsx')
+cols = [
+    ('depth_mm',
+     'Depth position within the sample region in millimetres, starting at 0 at the '
+     'top of the sample ROI and increasing at 0.1 mm per slice.  This is the x-axis '
+     'of the depth dose plot.'),
+    ('optical_density_depth',
+     'Raw mean ΔA (change in optical density) at each depth slice, averaged over the '
+     'central dose ROI cylinder.  Direct output of the FBP reconstruction with no '
+     'further processing; values are in OD units.'),
+    ('dose_signal',
+     'Baseline-corrected ΔA: the mean of the top and bottom ~25 % of the sample '
+     'column is used as a background baseline and subtracted, then negative values '
+     'are clipped to zero.  Removes any DC offset from residual non-dose absorption.  '
+     'Shown when the "Absolute (OD)" toggle is selected in the plot.'),
+    ('rel_dose',
+     'dose_signal normalised to its own maximum, giving a 0–1 relative dose curve.  '
+     'This is the default plot view and the most useful column for comparing profiles '
+     'across different measurements or irradiation conditions.'),
+]
+for col, desc in cols:
+    pdf.set_x(MARGIN + 2)
+    pdf.set_font('Arial', 'B', 9)
+    pdf.set_text_color(*C_SUBHEAD)
+    pdf.cell(52, 5.5, col)
+    pdf.set_font('Arial', '', 9)
+    pdf.set_text_color(*C_TEXT)
+    pdf.multi_cell(CONTENT_W - 54, 5.5, desc,
+                   new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.ln(0.5)
+
+pdf.note(
+    'The Excel file contains raw (unsmoothed) values.  The EMA smoothing shown '
+    'in the depth dose plot is for display only and is not written to the spreadsheet.'
+)
+
+pdf.subsection('Spreadsheet columns — dose_profiles.xlsx')
+pdf.body(
+    'Two sheets: relative_dose and optical_density.  Both have the same layout: '
+    'rows are lateral position in mm (pos_mm), columns are sampled depth slices '
+    'labelled by their depth (e.g. 3.50mm).  Approximately 20 evenly-spaced depths '
+    'are sampled, covering the full reconstructed volume.'
+)
+
+pdf.subsection('Scan folder directory structure')
+dirs = [
+    ('pre/',
+     'Raw intensity projection PNGs captured before irradiation.  '
+     'One file per angle, named img_NNNN_DDD_deg.png.'),
+    ('post/',
+     'Raw intensity projection PNGs captured after irradiation.  '
+     'Same naming convention as pre/.'),
+    ('subtracted/',
+     'ΔA = A_post − A_pre projections encoded as 16-bit PNG '
+     '(value = ΔA × 65535/4, covering OD 0–4).  '
+     'Input to the FBP reconstruction.'),
+    ('calibration/',
+     'Dark and flat calibration frames (dark.npy, flat.npy) captured at scan time.  '
+     'Bundled here so the correct calibration is always available alongside the '
+     'projection data, regardless of when the scan is exported.'),
+    ('reconstruct/',
+     'attenuation_volume.npy — cached FBP volume (float32, depth × Z × X).  '
+     'example_cropped.png — first projection after cropping, for a quick crop check.  '
+     'sanity_check.png — 4-panel diagnostic figure.'),
+    ('depth-dose/',
+     'depth_dose.png — relative dose vs. depth plot.  '
+     'depth_dose.xlsx — tabulated depth dose data (see columns above).  '
+     'recon_config.json — all reconstruction parameters and the detected dose '
+     'centroid offset from the axis of rotation.'),
+    ('dose-profiles/',
+     'Per-slice radial dose profile PNGs (~20 evenly-spaced depths).  '
+     'dose_profiles.xlsx — raw profile data: two sheets (relative_dose, '
+     'optical_density), rows = lateral position (mm), columns = depth slice.'),
+]
+for dname, desc in dirs:
+    pdf.set_x(MARGIN + 2)
+    pdf.set_font('Arial', 'B', 9)
+    pdf.set_text_color(*C_SUBHEAD)
+    pdf.cell(30, 5.5, dname)
+    pdf.set_font('Arial', '', 9)
+    pdf.set_text_color(*C_TEXT)
+    pdf.multi_cell(CONTENT_W - 32, 5.5, desc,
+                   new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.ln(0.5)
 
 # ── Page 6: Sanity check + Export + Tips ─────────────────────────────────────
 pdf.add_page()
