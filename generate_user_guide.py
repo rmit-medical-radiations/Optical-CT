@@ -526,7 +526,11 @@ pdf.step(5, 'The dose centroid is detected automatically.',
          'The app finds the brightest 20 % of slices in the sample ROI and computes '
          'the weighted centroid of the dose distribution.  This handles beams that '
          'are off-axis by up to ~6 mm.  The centroid offset is logged to the status '
-         'panel and recorded in recon_config.json.')
+         'panel and recorded in recon_config.json as dose_centroid_x_mm and '
+         'dose_centroid_z_mm.  '
+         'X is the left/right displacement as seen in the camera image (negative = '
+         'left of axis).  Z is the front/back displacement along the camera line of '
+         'sight (negative = closer to the camera than the rotation axis).')
 pdf.step(6, 'Review the sanity-check visualisation.',
          'Saved to scans/<name>/reconstruct/sanity_check.png.  '
          'See Section 7 for how to interpret it.')
