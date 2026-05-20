@@ -19,9 +19,13 @@ config = picam2.create_still_configuration(
 picam2.configure(config)
 
 picam2.set_controls({
+    # AE and AWB disabled: exposure must be fixed so Beer-Lambert A = -log(I/I0)
+    # is consistent across all projections and between sessions.
     "AeEnable": False,
     "AwbEnable": False,
     "NoiseReductionMode": controls.draft.NoiseReductionModeEnum.Off,
+    # 500 ms determined empirically for correct exposure at gain 1.0 with the
+    # current lamp brightness. Adjust if the lamp or optics change.
     "ExposureTime": 500000,
     "AnalogueGain": 1.0,
     "Sharpness": 0.0,
