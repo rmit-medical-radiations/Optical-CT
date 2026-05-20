@@ -567,14 +567,45 @@ def dose_profile_from_volume(mu_vol, mm_per_pixel_xz, depth_y=None,
 
 def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
                                   sample_height_px, roi_radius_px=10,
-                                  edge_baseline_px=50, invert=False):
+                                  edge_baseline_px=50, invert=False,
+                                  peak_fraction=0.20):
+    """
+    Extract depth dose along the beam axis, auto-detecting the lateral
+    centroid of the dose distribution from the brightest `peak_fraction`
+    of depth slices within the sample region.
+
+    Returns depth_mm, rel_dose, dose_signal, od_depth, (zc, xc)
+    where (zc, xc) is the detected dose centroid in volume pixel coordinates.
+    """
     Y, Z, X = mu_vol.shape
-    zc, xc = Z // 2, X // 2
+    y0 = int(sample_top_px)
+    y1 = min(Y, y0 + int(sample_height_px))
+    sample = mu_vol[y0:y1]           # (sample_slices, Z, X)
+
+    # ── locate dose centroid from peak-signal slices ───────────────────────
+    slice_means = sample.mean(axis=(1, 2))
+    n_peak = max(1, int(len(slice_means) * peak_fraction))
+    peak_idx = np.argpartition(slice_means, -n_peak)[-n_peak:]
+    dose_map = sample[peak_idx].mean(axis=0)   # 2-D map in XZ plane
+
+    # weighted centroid (suppress sub-threshold pixels)
+    threshold = np.percentile(dose_map, 50)
+    weights = np.clip(dose_map - threshold, 0, None)
+    total = weights.sum()
+    if total > 0:
+        z_coords = np.arange(Z)
+        x_coords = np.arange(X)
+        zc = int(round((weights.sum(axis=1) * z_coords).sum() / total))
+        xc = int(round((weights.sum(axis=0) * x_coords).sum() / total))
+        zc = int(np.clip(zc, roi_radius_px, Z - roi_radius_px - 1))
+        xc = int(np.clip(xc, roi_radius_px, X - roi_radius_px - 1))
+    else:
+        zc, xc = Z // 2, X // 2     # fallback to geometric centre
+
+    # ── extract depth profile through the detected centroid ────────────────
     r = int(roi_radius_px)
     zL, zR = max(0, zc - r), min(Z, zc + r + 1)
     xL, xR = max(0, xc - r), min(X, xc + r + 1)
-    y0 = int(sample_top_px)
-    y1 = min(Y, y0 + int(sample_height_px))
     od_depth = mu_vol[y0:y1, zL:zR, xL:xR].mean(axis=(1, 2))
     n = min(edge_baseline_px, len(od_depth) // 4)
     baseline = np.mean(np.concatenate([od_depth[:n], od_depth[-n:]]))
@@ -582,7 +613,7 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     dose = np.maximum(dose, 0)
     rel = dose / (np.max(dose) + 1e-12)
     depth_mm = np.arange(len(od_depth)) * mm_per_slice_y
-    return depth_mm, rel, dose, od_depth
+    return depth_mm, rel, dose, od_depth, (zc, xc)
 
 def find_axis_from_nozzle(img: np.ndarray) -> Optional[float]:
     """
@@ -1833,13 +1864,21 @@ class ReconWorker(QObject):
 
             # Depth dose
             self.log.emit("Computing depth dose...")
-            depth_mm, rel_dose, dose_signal, od_depth = depth_dose_from_central_axis(
-                mu_vol,
-                mm_per_slice_y=MM_PER_SLICE_Y,
-                sample_top_px=sample_top,
-                sample_height_px=sample_height,
-                roi_radius_px=10,
-                invert=False,
+            depth_mm, rel_dose, dose_signal, od_depth, dose_centroid = \
+                depth_dose_from_central_axis(
+                    mu_vol,
+                    mm_per_slice_y=MM_PER_SLICE_Y,
+                    sample_top_px=sample_top,
+                    sample_height_px=sample_height,
+                    roi_radius_px=10,
+                    invert=False,
+                )
+            _zc, _xc = dose_centroid
+            _offset_z = (_zc - mu_vol.shape[1] // 2) * MM_PER_PIXEL_XZ
+            _offset_x = (_xc - mu_vol.shape[2] // 2) * MM_PER_PIXEL_XZ
+            self.log.emit(
+                f"Dose centroid: Z={_zc}px ({_offset_z:+.1f} mm), "
+                f"X={_xc}px ({_offset_x:+.1f} mm) from axis"
             )
             smoothed        = np.array(ema(rel_dose,    alpha=0.1))
             smoothed_signal = np.array(ema(dose_signal, alpha=0.1))
@@ -1938,35 +1977,42 @@ class ReconWorker(QObject):
                 _style_ax(ax, f"Axial slice (Y={_y_mid}, mid-sample)")
                 ax.set_xlabel("X (px)", color=_DIM, fontsize=8)
                 ax.set_ylabel("Z (px)", color=_DIM, fontsize=8)
-                # draw dose ROI circle
+                # draw dose ROI circle at detected centroid; cross-hair at geometric axis
+                _sc_zc, _sc_xc = dose_centroid
                 _th = np.linspace(0, 2 * np.pi, 120)
-                ax.plot(_X // 2 + 10 * np.cos(_th),
-                        _Z // 2 + 10 * np.sin(_th),
-                        color=_ACC, linewidth=1, alpha=0.7)
+                ax.plot(_sc_xc + 10 * np.cos(_th),
+                        _sc_zc + 10 * np.sin(_th),
+                        color=_ACC, linewidth=1, alpha=0.9)
+                ax.plot(_X // 2, _Z // 2, '+', color="white",
+                        markersize=6, markeredgewidth=0.8, alpha=0.6)
                 _cbar(fig, im, ax)
 
-                # ── bottom-left: sagittal YZ slice at central X ────────────
+                # ── bottom-left: sagittal YZ slice through dose centroid X ──
                 ax = axs[1, 0]
-                sagittal = mu_vol[:, :, _X // 2]   # Y × Z
+                sagittal = mu_vol[:, :, _sc_xc]    # Y × Z at centroid X
                 _lo, _hi = _pct_lim(sagittal)
+                _z_origin = _sc_zc * MM_PER_PIXEL_XZ   # mm from left edge to centroid
                 _ext = [
-                    -(_Z // 2) * MM_PER_PIXEL_XZ,
-                    (_Z - _Z // 2) * MM_PER_PIXEL_XZ,
+                    -_sc_zc * MM_PER_PIXEL_XZ,
+                    (_Z - _sc_zc) * MM_PER_PIXEL_XZ,
                     _Y * MM_PER_SLICE_Y, 0,
                 ]
                 im = ax.imshow(sagittal, cmap="hot", vmin=max(_lo, 0), vmax=_hi,
                                aspect="auto", extent=_ext, origin="upper")
-                _style_ax(ax, "Sagittal slice (central X)")
+                _style_ax(ax, f"Sagittal slice (X={_sc_xc}px, centroid)")
                 ax.set_xlabel("Lateral Z (mm)", color=_DIM, fontsize=8)
                 ax.set_ylabel("Depth Y (mm)",   color=_DIM, fontsize=8)
                 # mark sample ROI
                 _s0_mm = sample_top * MM_PER_SLICE_Y
                 _s1_mm = (sample_top + sample_height) * MM_PER_SLICE_Y
                 _roi_mm = 10 * MM_PER_PIXEL_XZ
+                _cen_z_mm = (_sc_zc - _Z // 2) * MM_PER_PIXEL_XZ  # centroid offset in mm
                 ax.axhspan(_s0_mm, _s1_mm, color=_ACC, alpha=0.25)
                 ax.axhline(_s0_mm, color=_ACC, linewidth=1.2, linestyle="--", alpha=0.9)
                 ax.axhline(_s1_mm, color=_ACC, linewidth=1.2, linestyle="--", alpha=0.9)
-                ax.axvspan(-_roi_mm, _roi_mm, color=_ACC, alpha=0.15)
+                ax.axvspan(_cen_z_mm - _roi_mm, _cen_z_mm + _roi_mm, color=_ACC, alpha=0.15)
+                ax.axvline(_cen_z_mm, color=_ACC, linewidth=0.8, linestyle="-", alpha=0.6)
+                ax.axvline(0, color="white", linewidth=0.5, linestyle=":", alpha=0.5)
                 # mark the depth that feeds the sinogram panel
                 _sino_mm = _sino_row * MM_PER_SLICE_Y
                 ax.axhline(_sino_mm, color="white", linewidth=0.8, linestyle=":", alpha=0.7)
