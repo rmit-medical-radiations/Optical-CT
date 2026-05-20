@@ -325,8 +325,7 @@ pdf.body(
     'for correct exposure with the installed lamp and optics.  If the lamp is replaced '
     'or the optical path changes, recalibrate the shutter speed by adjusting '
     'ExposureTime in camera_server.py until the flat-field image is well-exposed '
-    '(pixel values in the range 180–230 on an 8-bit scale) without saturation.',
-    indent=4
+    '(pixel values in the range 180–230 on an 8-bit scale) without saturation.'
 )
 
 pdf.section('Scan parameters — what each setting controls')
