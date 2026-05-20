@@ -1648,7 +1648,6 @@ class ScanWorker(QObject):
                 if not ok:
                     return
                 self.phase_done.emit(2)
-                self._set_lamp(False)
                 if self._abort:
                     self.finished.emit(False, "Scan aborted by user"); return
                 # Save acquisition parameters so the post-scan can validate them
@@ -1683,7 +1682,6 @@ class ScanWorker(QObject):
             if not ok:
                 return
             self.phase_done.emit(3)
-            self._set_lamp(False)
 
             if self._abort:
                 self.finished.emit(False, "Scan aborted by user"); return
@@ -3234,8 +3232,6 @@ class MainWindow(QMainWindow):
         if ok and mode == "pre":
             self._auto_detect_axis()
         self.lamp_btn.setEnabled(True)
-        if self.lamp_btn.isChecked():
-            lamp_on()
 
     def _on_lamp_toggled(self, checked: bool):
         if checked:
