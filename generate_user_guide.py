@@ -689,8 +689,9 @@ for panel, desc in panels:
 pdf.section('Exporting a scan')
 
 pdf.body(
-    'Use File → Export scan (or the "Export" workflow) to create a self-contained '
-    'ZIP archive of a completed scan.  The archive includes:'
+    'Use File → Export scan (or the "Export" workflow) to copy a completed scan '
+    'folder to a chosen destination (e.g. a USB drive).  The exported folder contains '
+    'the full scan directory tree, including:'
 )
 export_items = [
     'Raw pre and post projection PNGs',
