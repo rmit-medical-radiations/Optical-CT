@@ -293,11 +293,22 @@ pdf.step(2, 'The workflow dialog appears.',
          'Choose the appropriate workflow for your current session (see Section 3).')
 pdf.step(3, 'Check "Real camera" and "Real stepper" checkboxes in the Scan panel.',
          'Leave both unchecked only for off-line testing with the camera simulator.')
+pdf.step(4, 'The Lamp button in the Scan panel defaults to ON.',
+         'It toggles the lamp directly from the app and turns amber when the lamp is '
+         'lit.  The button is disabled automatically during a scan.  '
+         'Turn the lamp OFF before capturing dark frames (phase 1).')
 
 pdf.note(
     'On first run the app creates a config/ folder alongside oct_app.py and stores '
     'default settings there.  You can adjust defaults via '
     'File → Save current settings as defaults.'
+)
+
+pdf.note(
+    'Live preview: when the Pi camera is reachable, the preview panel shows a real '
+    'camera image refreshed every 2 seconds.  When the lamp is off the preview will '
+    'be dark — this is expected.  If the Pi is not reachable the panel falls back to '
+    'the built-in camera simulator.'
 )
 
 pdf.subsection('Camera settings')
@@ -394,18 +405,21 @@ pdf.set_text_color(*C_TEXT)
 phases_pre = [
     ('(1) Dark capture',
      'LAMP OFF, no sample.',
-     'Turn off the lamp and remove the dosimeter from the beam path.  '
+     'Click the Lamp button in the Scan panel to turn the lamp OFF (button turns grey).  '
+     'Remove the dosimeter from the beam path.  '
      'Click "Capture dark".  The camera captures dark frames to characterise '
      'read-out noise and hot pixels.'),
     ('(2) Flat capture',
      'LAMP ON, no sample.',
-     'Turn the lamp on and ensure no sample is in the beam.  '
+     'Click the Lamp button to turn the lamp ON (button turns amber).  '
+     'Ensure no sample is in the beam.  '
      'Click "Capture flat".  The camera captures the bare beam profile (I0).'),
     ('(3) Pre-irradiation scan',
      'LAMP ON, dosimeter in place.',
      'Place the dosimeter on the rotation stage.  '
      'Click "Begin pre-scan".  The motor steps through 360° and a projection '
-     'image is captured at each angle.  Do not disturb the setup.'),
+     'image is captured at each angle.  Do not disturb the setup.  '
+     'The Lamp button is disabled during the scan.'),
     ('(4) Post-irradiation scan',
      'Skipped in this session.',
      'This phase is automatically skipped for a pre-scan session.'),
@@ -507,7 +521,12 @@ pdf.step(4, 'Review the depth dose plot.',
          'The relative dose vs. depth curve appears in the plot panel.  '
          'Use the Relative / Absolute (OD) toggle to switch the Y axis.  '
          'Hover the cursor over the plot to read off interpolated values.')
-pdf.step(5, 'Review the sanity-check visualisation.',
+pdf.step(5, 'The dose centroid is detected automatically.',
+         'The app finds the brightest 20 % of slices in the sample ROI and computes '
+         'the weighted centroid of the dose distribution.  This handles beams that '
+         'are off-axis by up to ~6 mm.  The centroid offset is logged to the status '
+         'panel and recorded in recon_config.json.')
+pdf.step(6, 'Review the sanity-check visualisation.',
          'Saved to scans/<name>/reconstruct/sanity_check.png.  '
          'See Section 7 for how to interpret it.')
 
@@ -518,7 +537,7 @@ outputs = [
     ('reconstruct/sanity_check.png',        '4-panel diagnostic figure (see Section 7).'),
     ('depth-dose/depth_dose.png',           'Depth dose plot (relative dose vs. mm).'),
     ('depth-dose/depth_dose.xlsx',          'Tabulated depth_mm, rel_dose, dose_signal, OD.'),
-    ('depth-dose/recon_config.json',        'Exact reconstruction parameters for provenance.'),
+    ('depth-dose/recon_config.json',        'Exact reconstruction parameters and the auto-detected dose centroid offset (mm) from the axis of rotation.'),
     ('dose-profiles/',                      'Per-slice radial dose profiles (every ~5% of depth).'),
 ]
 for fname, desc in outputs:
@@ -711,6 +730,12 @@ tips = [
      'pandas is not installed in the active environment.  The depth dose data is '
      'still available in the depth_dose.xlsx file once pandas is available, or use '
      'the depth dose plot PNG as an alternative.'),
+    ('Live preview is dark or shows the simulator animation',
+     'If the lamp is off, the preview will be black — click the Lamp button to turn '
+     'it on.  If the preview shows the animated simulator pattern rather than a real '
+     'camera image, the app cannot reach the Pi camera server: check that the Pi is '
+     'powered on, that "Real camera" is ticked, and that the Pi IP address was entered '
+     'correctly at startup.'),
 ]
 for problem, solution in tips:
     pdf.set_x(MARGIN)
