@@ -246,6 +246,20 @@ QPushButton#stop_btn:disabled {{
     border: 1px solid #1e2229;
     color: {TEXT_DIM};
 }}
+QPushButton#lamp_btn:checked {{
+    background-color: #2b2800;
+    border: 1px solid #c8a800;
+    color: #f0cc00;
+    font-weight: bold;
+}}
+QPushButton#lamp_btn:checked:hover {{
+    background-color: #3d3900;
+}}
+QPushButton#lamp_btn:!checked {{
+    background-color: {PANEL_BG};
+    border: 1px solid {BORDER_CLR};
+    color: {TEXT_DIM};
+}}
 QProgressBar {{
     background-color: #0d0f12;
     border: 1px solid {BORDER_CLR};
@@ -2696,12 +2710,20 @@ class MainWindow(QMainWindow):
         ctrl_grid.addWidget(self.real_camera_cb, 8, 0)
         ctrl_grid.addWidget(self.real_serial_cb, 8, 1)
 
-        # Scan progress (row 9)
-        ctrl_grid.addWidget(QLabel("Scan progress:"), 9, 0)
-        self.scan_progress = QProgressBar()
-        ctrl_grid.addWidget(self.scan_progress, 9, 1, 1, 2)
+        # Lamp toggle (row 9)
+        self.lamp_btn = QPushButton("☀  Lamp ON")
+        self.lamp_btn.setObjectName("lamp_btn")
+        self.lamp_btn.setCheckable(True)
+        self.lamp_btn.setChecked(True)
+        self.lamp_btn.setMinimumHeight(30)
+        ctrl_grid.addWidget(self.lamp_btn, 9, 0, 1, 3)
 
-        # Start / Cancel row (row 10)
+        # Scan progress (row 10)
+        ctrl_grid.addWidget(QLabel("Scan progress:"), 10, 0)
+        self.scan_progress = QProgressBar()
+        ctrl_grid.addWidget(self.scan_progress, 10, 1, 1, 2)
+
+        # Start / Cancel row (row 11)
         btn_row = QHBoxLayout()
         self.start_stop_btn = QPushButton("▶  CAPTURE PRE SCAN")
         self.start_stop_btn.setObjectName("start_btn")
@@ -2712,17 +2734,17 @@ class MainWindow(QMainWindow):
         self.cancel_scan_btn.setEnabled(False)
         btn_row.addWidget(self.start_stop_btn, 3)
         btn_row.addWidget(self.cancel_scan_btn, 1)
-        ctrl_grid.addLayout(btn_row, 10, 0, 1, 3)
+        ctrl_grid.addLayout(btn_row, 11, 0, 1, 3)
 
-        # Phase buttons — sub-steps that unlock once scan is started (rows 11-13)
+        # Phase buttons — sub-steps that unlock once scan is started (rows 12-14)
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setFrameShadow(QFrame.Shadow.Sunken)
-        ctrl_grid.addWidget(sep, 11, 0, 1, 3)
+        ctrl_grid.addWidget(sep, 12, 0, 1, 3)
 
         steps_lbl = QLabel("Scan steps:")
         steps_lbl.setObjectName("dim")
-        ctrl_grid.addWidget(steps_lbl, 12, 0, 1, 3)
+        ctrl_grid.addWidget(steps_lbl, 13, 0, 1, 3)
 
         self.phase_bar = PhaseButtonBar()
         phase_container = QWidget()
@@ -2731,7 +2753,7 @@ class MainWindow(QMainWindow):
         pc_layout.setContentsMargins(16, 0, 0, 0)
         pc_layout.setSpacing(0)
         pc_layout.addWidget(self.phase_bar)
-        ctrl_grid.addWidget(phase_container, 13, 0, 1, 3)
+        ctrl_grid.addWidget(phase_container, 14, 0, 1, 3)
 
         left.addWidget(ctrl_box, 2)
         root.addLayout(left, 5)
@@ -2855,8 +2877,10 @@ class MainWindow(QMainWindow):
         self.pre_scan_combo.currentIndexChanged.connect(self._on_pre_scan_selected)
         self.pre_scan_refresh_btn.clicked.connect(self._populate_pre_scan_combo)
         self.real_camera_cb.stateChanged.connect(lambda _: self._probe_camera())
+        self.lamp_btn.toggled.connect(self._on_lamp_toggled)
         self._populate_scan_selector()
         self._populate_pre_scan_combo()
+        lamp_on()   # lamp on by default
 
         # Spinbox → overlay (crop)
         for spin in (self.crop_cx_spin, self.crop_top_spin, self.crop_extent_spin):
@@ -3150,6 +3174,7 @@ class MainWindow(QMainWindow):
             f"color:{TEXT_DIM}; font-size:13px; font-weight:bold; min-height:36px;"
         )
         self.cancel_scan_btn.setEnabled(True)
+        self.lamp_btn.setEnabled(False)
         self.recon_btn.setEnabled(False)
         self._log(f"Starting scan: {name}")
 
@@ -3199,6 +3224,17 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Scan error", msg)
         if ok and mode == "pre":
             self._auto_detect_axis()
+        self.lamp_btn.setEnabled(True)
+        if self.lamp_btn.isChecked():
+            lamp_on()
+
+    def _on_lamp_toggled(self, checked: bool):
+        if checked:
+            lamp_on()
+            self.lamp_btn.setText("☀  Lamp ON")
+        else:
+            lamp_off()
+            self.lamp_btn.setText("Lamp OFF")
 
     # ── Scan selector ─────────────────────────────────────────────────────────
 
