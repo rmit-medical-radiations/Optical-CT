@@ -297,7 +297,8 @@ pdf.step(4, 'The Lamp button in the Scan panel defaults to ON.',
          'It toggles the lamp directly from the app and turns amber when the lamp is '
          'lit.  During a scan the lamp is controlled automatically — turned off for '
          'dark frames, on for flat and projection captures — and the button updates '
-         'to reflect the current state.')
+         'to reflect the current state.  The lamp is switched off automatically when '
+         'the app exits.')
 
 pdf.note(
     'On first run the app creates a config/ folder alongside oct_app.py and stores '
