@@ -19,6 +19,8 @@ picamera2                             oct_app.py  (PyQt6)
 
 The Raspberry Pi and control machine must be on the same network.  The Pi's IP address is configured in the app at runtime.
 
+The app includes a live camera preview (refreshed every 2 s from the Pi) and a lamp toggle button.  During a scan the lamp is controlled automatically: off for dark frames, on for flat and projection captures, and left on when the scan finishes so the dosimeter remains visible.
+
 ---
 
 ## Repository contents
@@ -118,8 +120,8 @@ scans/
     ├── subtracted/           # ΔA = A_post − A_pre projections (uint16 PNG)
     ├── calibration/          # Dark and flat frames captured at scan time
     ├── reconstruct/          # FBP volume, crop preview, sanity-check figure
-    ├── depth-dose/           # Depth dose plot, Excel table, recon config
-    ├── dose-profiles/        # Per-slice radial dose profiles
+    ├── depth-dose/           # Depth dose plot, Excel table, recon config (includes dose centroid offset)
+    ├── dose-profiles/        # Per-slice radial dose profile PNGs + dose_profiles.xlsx
     └── scan_meta.json        # Acquisition parameters (step size, date, etc.)
 ```
 
@@ -139,6 +141,8 @@ Reconstruction uses `skimage.transform.iradon` with a Hann filter.  The volume h
 
 - Lateral: 43 mm / 454 px ≈ 0.095 mm/px
 - Depth: 0.1 mm/slice
+
+The dose centroid is auto-detected from the brightest 20 % of slices in the sample ROI using a weighted centroid above the 50th-percentile threshold.  This handles beams displaced up to ~6 mm from the geometric axis.  The centroid offset is stored in `depth-dose/recon_config.json`.
 
 ---
 
