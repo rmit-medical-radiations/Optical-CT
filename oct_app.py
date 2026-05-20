@@ -2038,22 +2038,52 @@ class ReconWorker(QObject):
             # Dose profiles per slice
             self.log.emit("Computing per-slice dose profiles...")
             Y = mu_vol.shape[0]
-            for y in range(0, Y, max(1, Y // 20)):
+            step = max(1, Y // 20)
+            profile_pos_mm  = None
+            profile_rel     = {}    # depth_mm -> rel array
+            profile_od      = {}    # depth_mm -> od array
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            for y in range(0, Y, step):
                 if self._abort:
                     break
-                pos_mm, rel, _ = dose_profile_from_volume(
+                pos_mm, rel, od = dose_profile_from_volume(
                     mu_vol, MM_PER_PIXEL_XZ, depth_y=y, roi_radius_px=10)
-                import matplotlib
-                matplotlib.use("Agg")
-                import matplotlib.pyplot as plt
-                fig, ax = plt.subplots(figsize=(6, 3))
-                ax.plot(pos_mm, rel)
-                ax.set_xlabel("Position (mm)"); ax.set_ylabel("Relative Dose")
-                ax.set_title(f"Dose profile depth {y}"); ax.grid(True)
-                fig.tight_layout()
-                fig.savefig(str(Path(dose_dir) / f"profile_{y:04d}.png"), dpi=150)
-                plt.close(fig)
+                depth_key = f"{y * MM_PER_SLICE_Y:.2f}mm"
+                if profile_pos_mm is None:
+                    profile_pos_mm = pos_mm
+                profile_rel[depth_key] = rel
+                profile_od[depth_key]  = od
+                # plot
+                pfig = Figure(figsize=(6, 3), facecolor="#0d0f12")
+                FigureCanvasAgg(pfig)
+                pax = pfig.add_subplot(111, facecolor="#13161b")
+                pax.plot(pos_mm, rel, color="#00d4aa", linewidth=1.2)
+                pax.set_xlabel("Position (mm)", color="#8b95a8", fontsize=8)
+                pax.set_ylabel("Relative Dose", color="#8b95a8", fontsize=8)
+                pax.set_title(f"Dose profile — {depth_key}", color="#8b95a8", fontsize=9)
+                pax.tick_params(colors="#8b95a8")
+                for sp in pax.spines.values(): sp.set_color("#252932")
+                pax.grid(True, alpha=0.15, color="#252932")
+                pfig.tight_layout()
+                pfig.savefig(str(Path(dose_dir) / f"profile_{y:04d}.png"),
+                             dpi=150, facecolor=pfig.get_facecolor())
                 self.progress.emit(85 + int(15 * y / Y))
+
+            # Save raw profile data to Excel
+            try:
+                import pandas as pd
+                if profile_pos_mm is not None:
+                    df_rel = pd.DataFrame(profile_rel, index=profile_pos_mm)
+                    df_rel.index.name = "pos_mm"
+                    df_od  = pd.DataFrame(profile_od,  index=profile_pos_mm)
+                    df_od.index.name  = "pos_mm"
+                    xls_path = str(Path(dose_dir) / "dose_profiles.xlsx")
+                    with pd.ExcelWriter(xls_path) as writer:
+                        df_rel.to_excel(writer, sheet_name="relative_dose")
+                        df_od.to_excel(writer,  sheet_name="optical_density")
+                    self.log.emit("Dose profile data saved to Excel.")
+            except Exception as e:
+                self.log.emit(f"⚠ Could not save dose profile Excel: {e}")
 
             # Save reconstruction parameters alongside results
             recon_cfg = {
@@ -2068,6 +2098,10 @@ class ReconWorker(QObject):
                 "sample_height":  sample_height,
                 "mm_per_slice_y": MM_PER_SLICE_Y,
                 "mm_per_pixel_xz": MM_PER_PIXEL_XZ,
+                "dose_centroid_z_px":  int(dose_centroid[0]),
+                "dose_centroid_x_px":  int(dose_centroid[1]),
+                "dose_centroid_z_mm":  round(_offset_z, 3),
+                "dose_centroid_x_mm":  round(_offset_x, 3),
             }
             (Path(depth_dose_dir) / "recon_config.json").write_text(
                 json.dumps(recon_cfg, indent=2))
