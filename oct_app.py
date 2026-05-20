@@ -422,6 +422,14 @@ class CameraProbeWorker(QObject):
         self.result.emit(probe_camera())
 
 
+class LivePreviewWorker(QObject):
+    """Fetches a single preview frame from the Pi camera server."""
+    frame_ready = pyqtSignal(object)   # np.ndarray or None on failure
+
+    def run(self):
+        self.frame_ready.emit(take_photo_http(stack=1))
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # GPIO lamp helpers (with graceful fallback)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2543,9 +2551,12 @@ class MainWindow(QMainWindow):
 
         # Camera
         self._sim = CameraSimulator()
+        self._camera_reachable = False
+        self._preview_thread: Optional[QThread] = None
+        self._preview_worker: Optional[LivePreviewWorker] = None
         self._frame_timer = QTimer(self)
         self._frame_timer.timeout.connect(self._update_preview)
-        self._frame_timer.start(100)
+        self._frame_timer.start(2000)
 
         self._build_ui()
         self._connect_signals()
@@ -2941,6 +2952,7 @@ class MainWindow(QMainWindow):
         self._probe_thread.start()
 
     def _on_camera_probe(self, reachable: bool):
+        self._camera_reachable = reachable
         if reachable:
             self._cam_status_lbl.setText(f"● Camera: online  ({CAMERA_URL})")
             self._cam_status_lbl.setStyleSheet(f"color:{ACCENT}; font-size:11px;")
@@ -2985,9 +2997,31 @@ class MainWindow(QMainWindow):
         self.crop_cx_spin.setValue(cx_int)
 
     def _update_preview(self):
-        if self._freeze_preview:
+        if self._freeze_preview or self._mode == "scanning":
             return
-        if self._mode != "scanning":
+        use_live = self._camera_reachable and self.real_camera_cb.isChecked()
+        if use_live:
+            # At most one fetch in flight at a time
+            if self._preview_thread and self._preview_thread.isRunning():
+                return
+            self._preview_thread = QThread()
+            self._preview_worker = LivePreviewWorker()
+            self._preview_worker.moveToThread(self._preview_thread)
+            self._preview_thread.started.connect(self._preview_worker.run)
+            self._preview_worker.frame_ready.connect(self._on_live_preview_frame)
+            self._preview_worker.frame_ready.connect(self._preview_thread.quit)
+            self._preview_thread.start()
+        else:
+            img = self._sim.get_frame()
+            self._last_preview_frame = img
+            self.preview.set_frame(img)
+
+    def _on_live_preview_frame(self, img: Optional[np.ndarray]):
+        if img is not None:
+            self._last_preview_frame = img
+            self.preview.set_frame(img)
+        else:
+            # Camera fetch failed — fall back to simulator for this tick
             img = self._sim.get_frame()
             self._last_preview_frame = img
             self.preview.set_frame(img)
