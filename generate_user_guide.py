@@ -419,7 +419,7 @@ phases_pre = [
      'Place the dosimeter on the rotation stage.  '
      'Click "Begin pre-scan".  The motor steps through 360° and a projection '
      'image is captured at each angle.  Do not disturb the setup.  '
-     'The lamp turns off automatically when the scan completes.'),
+     'The lamp remains on when the scan finishes so you can inspect the dosimeter.'),
     ('(4) Post-irradiation scan',
      'Skipped in this session.',
      'This phase is automatically skipped for a pre-scan session.'),
@@ -474,7 +474,8 @@ pdf.step(3, 'Click "Continue".',
 pdf.step(4, 'Click "CAPTURE POST SCAN" and follow the same four-phase sequence.',
          'Phases (1) and (2) (dark and flat) are re-captured — fresh calibration frames '
          'correct for any lamp drift since the pre-scan.  '
-         'Phase (3) is skipped.  Phase (4) captures the post-irradiation projections.')
+         'Phase (3) is skipped.  Phase (4) captures the post-irradiation projections.  '
+         'The lamp remains on after the scan completes.')
 pdf.step(5, 'On completion, ΔA = A_post − A_pre is computed for every projection.',
          'Results are saved to scans/<name>/subtracted/ as 16-bit PNG files.')
 
