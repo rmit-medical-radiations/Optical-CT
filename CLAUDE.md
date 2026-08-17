@@ -68,6 +68,52 @@ What remains uncorrected:
 
 ## Decisions
 
+### 2026-08-18: the dose centroid was finding artefacts, not the beam
+
+The operator reports the beam is under 1 cm across (the standing assumption has
+always been 1 cm; `BEAM_DIAMETER_MM` keeps 10 mm as an upper bound). That makes
+the beam under 2% of a reconstructed slice: 8,755 px of 490,000 at 10 mm on the
+66 mm grid.
+
+The centroid search thresholded at the **median of the whole slice**, keeping
+half the pixels. Only about 3.6% of the surviving weight was beam, so the
+centroid was effectively measuring the background. This is why the sanity check
+for `scan_20260701_101800` put the dose centroid on a smooth, radially
+symmetric blob 2.4 mm off axis: that blob is a cupping artefact, and the
+centroid was tracking it rather than the beam.
+
+Two changes, both needed:
+
+1. **Exclude the vial wall** (`gel_interior_mask`). Whenever the wall fails to
+   cancel it is the brightest thing in the slice, and being concentric with the
+   rotation axis its centroid sits dead centre. That pulls a whole-slice
+   centroid to the middle no matter how hard the map is thresholded, because
+   the wall is both brighter and larger in area than a small beam. No dose is
+   deposited in glass, so excluding it costs nothing. The wall radius is found
+   as the strongest peak in the radial mean profile, searched outside the middle
+   of the field so the central cupping cannot be mistaken for it.
+2. **Threshold at half the peak above background**, the FWHM convention. An
+   intermediate version sized the kept area from the assumed beam diameter,
+   which worked only for beams near that size and still missed a 3 mm beam by
+   3.6 mm, because a 10 mm assumption keeps 12x a 5 mm beam's area. A contrast
+   ratio needs no size assumption at all: measured error is 0.07 to 0.15 mm for
+   3, 5, 8 and 10 mm beams alike, with or without a strong wall ring.
+
+The peak is read at the 99.9th percentile rather than the maximum so a single
+hot pixel (bubble, clipped projection) cannot define the threshold. Verified
+against a synthetic hot pixel.
+
+`BEAM_DIAMETER_MM` is now used only to **sanity-check** the result: if the
+region found is bigger than a beam that size could be, the log says the centroid
+has probably locked onto an artefact and the depth dose should be treated with
+suspicion. Verified on a volume containing artefacts but no dose at all, where
+it correctly reports the result as implausible instead of returning a confident
+wrong answer.
+
+Slice ranking also changed from the slice mean to a high percentile: with a beam
+this small the mean of a slice is background, so ranking by mean picked the
+slices with the most artefact rather than the most dose.
+
 ### 2026-08-18: harden the rotation match against bubbles
 
 The operator reported bubbles in the pre-scan for `scan_20260701_101800`, which

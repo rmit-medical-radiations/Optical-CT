@@ -542,9 +542,13 @@ pdf.step(4, 'Review the depth dose plot.',
          'Use the Relative / Absolute (OD) toggle to switch the Y axis.  '
          'Hover the cursor over the plot to read off interpolated values.')
 pdf.step(5, 'The dose centroid is detected automatically.',
-         'The app finds the brightest 20 % of slices in the sample ROI and computes '
-         'the weighted centroid of the dose distribution.  This handles beams that '
-         'are off-axis by up to ~6 mm.  The centroid offset is logged to the status '
+         'The app finds the brightest 20 % of slices in the sample ROI, excludes the '
+         'vial wall, and computes the weighted centroid of everything above half the '
+         'peak dose.  It locates beams of a few mm upwards, on or off axis.  If the '
+         'irradiated region it finds is far larger than the beam could be, the status '
+         'panel warns that the centroid has probably found a reconstruction artefact '
+         'instead, and the depth dose should not be relied on.  '
+         'The centroid offset is logged to the status '
          'panel and recorded in recon_config.json as dose_centroid_x_mm and '
          'dose_centroid_z_mm.  '
          'X is the left/right displacement as seen in the camera image (negative = '

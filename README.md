@@ -162,7 +162,16 @@ Reconstruction uses `skimage.transform.iradon` with a Hann filter.  The volume h
 - Lateral: 43 mm / 454 px ≈ 0.095 mm/px
 - Depth: 0.1 mm/slice
 
-The dose centroid is auto-detected from the brightest 20 % of slices in the sample ROI using a weighted centroid above the 50th-percentile threshold.  This handles beams displaced up to ~6 mm from the geometric axis.  The centroid offset is stored in `depth-dose/recon_config.json` as `dose_centroid_x_mm` and `dose_centroid_z_mm`:
+The dose centroid is auto-detected from the brightest 20 % of slices in the sample ROI, ranked by a high percentile rather than the slice mean (with a beam this small the mean of a slice is background, so the mean would rank slices by artefact content).  Locating the beam within that map takes two steps, both needed because the beam is under 2 % of the slice area at 10 mm across on a 66 mm grid:
+
+1. The vial wall is excluded (`gel_interior_mask`).  Whenever it fails to cancel it is the brightest thing in the slice, and being concentric with the rotation axis its centroid sits dead centre, which drags a whole-slice centroid to the middle however hard the map is thresholded.  No dose is deposited in the glass, so excluding it costs nothing.
+2. The threshold is taken at half the peak above local background, the usual FWHM convention.  Being a contrast ratio rather than an area, it needs no assumption about beam size: it locates a 3 mm beam and a 10 mm one equally well.  The peak is read at the 99.9th percentile, not the maximum, so a single hot pixel cannot define it.
+
+This previously thresholded at the median of the whole slice, which kept half the pixels, so roughly 96 % of the weight came from undosed background and the centroid tracked artefacts rather than the beam.
+
+`BEAM_DIAMETER_MM` (10 mm, an upper bound) is not used to find the beam, only to sanity-check it: if the region found is larger than a beam that size could be, the log says the centroid has probably locked onto an artefact and the depth dose should not be trusted.
+
+The centroid offset is stored in `depth-dose/recon_config.json` as `dose_centroid_x_mm` and `dose_centroid_z_mm`:
 
 - **X** — left/right displacement as seen in the camera image (negative = left of axis)
 - **Z** — front/back displacement along the camera line of sight (negative = closer to the camera than the rotation axis)

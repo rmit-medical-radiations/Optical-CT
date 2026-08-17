@@ -157,6 +157,16 @@ MM_PER_SLICE_Y   = 0.1
 # radius of the column averaged for depth dose and per-slice profiles
 DOSE_ROI_RADIUS_PX = 10
 
+# Upper bound on the beam diameter, used to size the area the dose-centroid
+# search keeps.  The working assumption has always been 1 cm and the operator
+# reports it is smaller than that, so 10 mm stays the bound.  Over-stating it is
+# the safe direction: a larger assumed beam keeps more pixels, so real beam can
+# never be thresholded away.  Make this a UI setting if beam sizes ever vary.
+BEAM_DIAMETER_MM = 10.0
+# How many times the beam's own area to keep, leaving room for penumbra and for
+# the beam sitting off-centre.
+DOSE_CENTROID_AREA_MARGIN = 3.0
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Palette – dark industrial
@@ -951,17 +961,107 @@ def dose_profile_from_volume(mu_vol, mm_per_pixel_xz, depth_y=None,
     rel = od / (float(np.max(od)) + 1e-12)
     return pos_mm, rel, od
 
+def find_dose_centroid(dose_map, mm_per_pixel_xz,
+                       beam_diameter_mm=BEAM_DIAMETER_MM):
+    """
+    Locate the beam in an XZ dose map.
+
+    Two things have to be got right because the beam is small: under 2% of the
+    slice at 10 mm across on a 66 mm grid.
+
+    The wall is excluded first (see gel_interior_mask).  Then the threshold is
+    taken at half of the peak above the local background, which is the usual
+    FWHM convention and, being a contrast ratio rather than an area, needs no
+    assumption about how big the beam is.  This function once thresholded at the
+    median of the whole slice, which kept half the pixels: about 96% of the
+    weight came from undosed background, and the centroid tracked reconstruction
+    artefacts rather than the beam.  Sizing the kept area from an assumed beam
+    diameter fixed that only for beams close to the assumed size, and still
+    missed a 3 mm beam by 3.6 mm.
+
+    The peak is read at the 99.9th percentile rather than the maximum so that a
+    single hot pixel, from a bubble or a clipped projection, cannot define it.
+
+    Returns (zc, xc, area_px, plausible), where plausible is False if the region
+    found is larger than a beam of beam_diameter_mm could be, which means
+    something other than the beam was picked up.
+    """
+    interior = gel_interior_mask(dose_map, mm_per_pixel_xz)
+    inside = dose_map[interior]
+    if inside.size == 0:
+        Z, X = dose_map.shape
+        return Z // 2, X // 2, 0, False
+
+    base = float(np.median(inside))
+    peak = float(np.percentile(inside, 99.9))
+    threshold = base + 0.5 * (peak - base)
+    weights = np.where(interior, np.clip(dose_map - threshold, 0.0, None), 0.0)
+
+    total = weights.sum()
+    Z, X = dose_map.shape
+    if total <= 0:
+        return Z // 2, X // 2, 0, False
+
+    zc = int(round((weights.sum(axis=1) * np.arange(Z)).sum() / total))
+    xc = int(round((weights.sum(axis=0) * np.arange(X)).sum() / total))
+
+    area_px = int((weights > 0).sum())
+    beam_px = np.pi * (0.5 * float(beam_diameter_mm) / float(mm_per_pixel_xz)) ** 2
+    plausible = bool(area_px <= DOSE_CENTROID_AREA_MARGIN * beam_px)
+    return zc, xc, area_px, plausible
+
+
+def gel_interior_mask(dose_map, mm_per_pixel_xz, wall_margin_mm=1.5):
+    """
+    Mask keeping only the gel inside the vial wall.
+
+    The wall is the brightest thing in a ΔA slice whenever it fails to cancel
+    perfectly, and being concentric with the rotation axis its centroid sits
+    dead centre.  That is enough to drag a whole-slice centroid to the middle of
+    the image however hard the dose map is thresholded, because the wall is both
+    brighter and larger in area than a beam this small.  No dose is deposited in
+    the glass, so excluding it costs nothing.
+
+    The wall radius is found as the strongest peak in the radial mean profile,
+    searched outside the middle of the field so the central cupping artefact
+    cannot be mistaken for it.  If no clear wall stands out, everything is kept.
+    """
+    Z, X = dose_map.shape
+    zz, xx = np.ogrid[0:Z, 0:X]
+    r = np.hypot(zz - (Z - 1) / 2.0, xx - (X - 1) / 2.0)
+    r_max = min(Z, X) / 2.0
+
+    radii = np.arange(0, int(r_max))
+    profile = np.array([dose_map[(r >= a) & (r < a + 1)].mean() if a + 1 <= r_max
+                        else 0.0 for a in radii])
+    outer = radii >= 0.40 * r_max
+    if not outer.any():
+        return np.ones_like(dose_map, dtype=bool)
+
+    peak = float(profile[outer].max())
+    typical = float(np.median(profile[outer]))
+    if peak <= typical * 1.5:
+        return r <= 0.95 * r_max          # no wall stands out; keep the field
+    wall_r = float(radii[outer][int(np.argmax(profile[outer]))])
+    return r <= max(wall_r - wall_margin_mm / float(mm_per_pixel_xz),
+                    0.2 * r_max)
+
+
 def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
                                   sample_height_px, roi_radius_px=DOSE_ROI_RADIUS_PX,
                                   edge_baseline_px=50, invert=False,
-                                  peak_fraction=0.20):
+                                  peak_fraction=0.20,
+                                  mm_per_pixel_xz=MM_PER_PIXEL_XZ,
+                                  beam_diameter_mm=BEAM_DIAMETER_MM):
     """
     Extract depth dose along the beam axis, auto-detecting the lateral
     centroid of the dose distribution from the brightest `peak_fraction`
     of depth slices within the sample region.
 
-    Returns depth_mm, rel_dose, dose_signal, od_depth, (zc, xc)
-    where (zc, xc) is the detected dose centroid in volume pixel coordinates.
+    Returns depth_mm, rel_dose, dose_signal, od_depth, (zc, xc), beam_info
+    where (zc, xc) is the detected dose centroid in volume pixel coordinates and
+    beam_info carries the centroid's area in pixels and whether it is small
+    enough to actually be the beam.
     """
     Y, Z, X = mu_vol.shape
     y0 = int(sample_top_px)
@@ -969,24 +1069,20 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     sample = mu_vol[y0:y1]           # (sample_slices, Z, X)
 
     # ── locate dose centroid from peak-signal slices ───────────────────────
-    slice_means = sample.mean(axis=(1, 2))
-    n_peak = max(1, int(len(slice_means) * peak_fraction))
-    peak_idx = np.argpartition(slice_means, -n_peak)[-n_peak:]
+    # Rank slices by a high percentile, not the mean: with a beam this small the
+    # mean of a slice is background, so the mean would rank slices by how much
+    # artefact they contain rather than by how much dose.
+    slice_scores = np.percentile(sample.reshape(len(sample), -1), 99.0, axis=1)
+    n_peak = max(1, int(len(slice_scores) * peak_fraction))
+    peak_idx = np.argpartition(slice_scores, -n_peak)[-n_peak:]
     dose_map = sample[peak_idx].mean(axis=0)   # 2-D map in XZ plane
 
-    # weighted centroid (suppress sub-threshold pixels)
-    threshold = np.percentile(dose_map, 50)
-    weights = np.clip(dose_map - threshold, 0, None)
-    total = weights.sum()
-    if total > 0:
-        z_coords = np.arange(Z)
-        x_coords = np.arange(X)
-        zc = int(round((weights.sum(axis=1) * z_coords).sum() / total))
-        xc = int(round((weights.sum(axis=0) * x_coords).sum() / total))
-        zc = int(np.clip(zc, roi_radius_px, Z - roi_radius_px - 1))
-        xc = int(np.clip(xc, roi_radius_px, X - roi_radius_px - 1))
-    else:
-        zc, xc = Z // 2, X // 2     # fallback to geometric centre
+    zc, xc, _area, _plausible = find_dose_centroid(
+        dose_map, mm_per_pixel_xz, beam_diameter_mm)
+    beam_info = {"area_px": _area, "plausible": _plausible,
+                 "area_mm2": _area * mm_per_pixel_xz ** 2}
+    zc = int(np.clip(zc, roi_radius_px, Z - roi_radius_px - 1))
+    xc = int(np.clip(xc, roi_radius_px, X - roi_radius_px - 1))
 
     # ── extract depth profile through the detected centroid ────────────────
     r = int(roi_radius_px)
@@ -999,7 +1095,7 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     dose = np.maximum(dose, 0)
     rel = dose / (np.max(dose) + 1e-12)
     depth_mm = np.arange(len(od_depth)) * mm_per_slice_y
-    return depth_mm, rel, dose, od_depth, (zc, xc)
+    return depth_mm, rel, dose, od_depth, (zc, xc), beam_info
 
 def find_axis_from_nozzle(img: np.ndarray) -> Optional[float]:
     """
@@ -2417,7 +2513,7 @@ class ReconWorker(QObject):
 
             # Depth dose
             self.log.emit("Computing depth dose...")
-            depth_mm, rel_dose, dose_signal, od_depth, dose_centroid = \
+            depth_mm, rel_dose, dose_signal, od_depth, dose_centroid, beam_info = \
                 depth_dose_from_central_axis(
                     mu_vol,
                     mm_per_slice_y=MM_PER_SLICE_Y,
@@ -2431,8 +2527,18 @@ class ReconWorker(QObject):
             _offset_x = (_xc - mu_vol.shape[2] // 2) * MM_PER_PIXEL_XZ
             self.log.emit(
                 f"Dose centroid: Z={_zc}px ({_offset_z:+.1f} mm), "
-                f"X={_xc}px ({_offset_x:+.1f} mm) from axis"
+                f"X={_xc}px ({_offset_x:+.1f} mm) from axis; "
+                f"irradiated area {beam_info['area_mm2']:.1f} mm²"
             )
+            if not beam_info["plausible"]:
+                # The region found is too big to be a beam of BEAM_DIAMETER_MM,
+                # so the centroid has locked onto an artefact and every dose
+                # number below it is measured in the wrong place.
+                self.log.emit(
+                    f"⚠ That is far larger than a {BEAM_DIAMETER_MM:g} mm beam — "
+                    f"the dose centroid has probably found a reconstruction "
+                    f"artefact rather than the beam, so treat the depth dose "
+                    f"and the per-slice profiles with suspicion.")
             smoothed        = np.array(ema(rel_dose,    alpha=0.1))
             smoothed_signal = np.array(ema(dose_signal, alpha=0.1))
             self.dose_ready.emit(depth_mm, smoothed, smoothed_signal)
