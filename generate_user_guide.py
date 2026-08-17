@@ -484,12 +484,11 @@ pdf.step(5, 'The app checks the dosimeter went back in the same orientation.',
          'The measurement is saved to rotation_offset.json.')
 
 pdf.warning(
-    'Two dialogs mean the scan may not be fully corrected: "Dosimeter moved" '
-    '(the dosimeter was shifted sideways as well as turned, which the app cannot '
-    'correct) and "Check the dosimeter position" (the app could not work out how '
-    'it was sitting).  In both cases the scan is still saved and processed, but '
-    'the dose results may be wrong.  Re-scanning is not possible once the '
-    'dosimeter has been irradiated, so take care mounting it.'
+    'One dialog means the scan may not be right: "Check the dosimeter position", '
+    'which appears when the app cannot work out how the dosimeter was sitting.  '
+    'The scan is still saved and processed, but if the dosimeter was turned when '
+    'you put it back, the dose results may be wrong.  Re-scanning is not possible '
+    'once the dosimeter has been irradiated, so take care mounting it.'
 )
 
 pdf.step(6, 'On completion, ΔA = A_post − A_pre is computed for every projection.',
@@ -629,14 +628,14 @@ dirs = [
      'Same naming convention as pre/.'),
     ('subtracted/',
      'ΔA = A_post − A_pre projections encoded as 16-bit PNG in offset binary '
-     '(value = (ΔA + 1) × 65535/5, covering −1 to +4 OD, so negative ΔA is kept).  '
+     '(value = (ΔA + 4) × 65535/8, covering −4 to +4 OD, so negative ΔA is kept).  '
      'encoding.json records the format.  Input to the FBP reconstruction.'),
     ('rotation_offset.json',
      'How far the dosimeter was turned between the pre and post sessions, measured '
      'and corrected automatically after the post scan.  delta_phi_deg is the angle '
-     'applied; confident says whether the scan came out fully corrected, '
-     'residual_lateral_px is any leftover sideways offset, and notes says what was '
-     'wrong if anything was.'),
+     'applied; confident says whether the measurement could be trusted; '
+     'residual_lateral_px should be near zero, and a larger value points at the '
+     'stage, camera or lamp having moved rather than at the dosimeter.'),
     ('calibration/',
      'Dark and flat calibration frames (dark.npy, flat.npy) captured at scan time.  '
      'Bundled here so the correct calibration is always available alongside the '

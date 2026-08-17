@@ -182,10 +182,17 @@ PHASE_DONE  = "#1a3d34"
 # and gives zero-dose regions a positive DC offset after FBP.  A scan's format
 # is recorded in subtracted/encoding.json; scans without one are read as v1.
 OD_SCALE  = 65535.0 / 4.0
-OD_OFFSET = 1.0                       # OD represented by a stored value of 0
-OD_RANGE  = 5.0                       # encoded span: −1 .. +4 OD
+# Bubbles come and go between sessions, and one present in the pre scan and
+# gone by the post scan gives a large negative ΔA; overlapping bubbles clipped
+# both v2's −1 OD floor and a −2 OD one on synthetic data.  Rather than guess
+# again, size the range from the bound the count mask already imposes: with
+# pixels below MIN_VALID_COUNTS discarded and a flat field of at most 255
+# counts, |A| cannot exceed log(255/10) ≈ 3.2, so ±4 OD cannot clip.
+# Resolution is ~0.0001 OD, far finer than the noise.
+OD_OFFSET = 4.0                       # OD represented by a stored value of 0
+OD_RANGE  = 8.0                       # encoded span: −4 .. +4 OD
 OD_SCALE_V2 = 65535.0 / OD_RANGE
-SUBTRACT_ENCODING_VERSION = 2
+SUBTRACT_ENCODING_VERSION = 3
 ENCODING_JSON = "encoding.json"
 
 # The camera server stacks frames in float32.  Serving that as uint8 throws away
@@ -208,8 +215,11 @@ ROTATION_ALERT_DEG = 5.0
 ROTATION_MATCH_MIN_SIGMA = 2.5
 
 # Sideways offset still left after correcting the rotation, in detector pixels,
-# beyond which the dosimeter was clearly moved as well as turned.  Re-pairing
-# frames cannot fix that, so the app says so rather than claiming success.
+# beyond which something is wrong.  The mount fixes the dosimeter in every
+# degree of freedom except rotation about the vertical axis, so the operator
+# cannot cause this: a reading here means the stage, camera or lamp has shifted
+# between sessions.  Logged for whoever maintains the rig, never raised at the
+# operator, who has no way to act on it.
 ROTATION_MAX_LATERAL_PX = 2.0
 
 
@@ -591,16 +601,25 @@ def match_profile_shift(prof_pre, prof_post):
     Frame shift aligning two projection stacks, by whole-profile matching.
 
     For each candidate shift s, compare pre[i] against post[i + s] over every
-    angle and column at once, and take the s that minimises the squared
-    difference.  Matching whole profiles rather than a summary statistic is what
-    makes this usable on a real scan: the post frames contain dose that the pre
-    frames do not, and any single moment of the profile (a centroid above all)
-    is pulled off by that extra absorbance.  The sharp, high-contrast structure
-    dominates a full-profile comparison, so a weak added dose barely moves it.
+    angle and column at once, and take the s that fits best.  Matching whole
+    profiles rather than a summary statistic is what makes this usable on a real
+    scan: the post frames contain dose that the pre frames do not, and any
+    single moment of the profile (a centroid above all) is pulled off by that
+    extra absorbance.  The sharp, high-contrast structure dominates a
+    full-profile comparison, so a weak added dose barely moves it.
 
-    Returns (shift, separation, scores).  separation is how far the winning
-    score sits below the typical one, in standard deviations; a genuine match
-    stands well clear, and a stack with nothing to lock onto does not.
+    The fit is absolute difference, not squared.  Bubbles come and go between
+    sessions, and a squared metric lets a handful of those localised
+    discrepancies dominate: on synthetic scans with different bubbles in each
+    session, squared error picked a rotation eight steps wrong where absolute
+    error was one step out.
+
+    Returns (shift, separation, margin, scores).  separation is how far the
+    winning score sits below the typical one, in standard deviations, and is
+    what decides whether the answer is trusted.  margin compares the winner
+    against the best rival outside its immediate neighbourhood; it is recorded
+    as a diagnostic but is not a gate, because on a wider sweep it did not
+    separate good answers from bad reliably.
     """
     A = np.asarray(prof_pre, dtype=np.float64)
     B = np.asarray(prof_post, dtype=np.float64)
@@ -608,13 +627,21 @@ def match_profile_shift(prof_pre, prof_post):
     A = A - A.mean(axis=1, keepdims=True)
     B = B - B.mean(axis=1, keepdims=True)
 
-    scores = np.array([float(((A - np.roll(B, -s, axis=0)) ** 2).sum())
-                       for s in range(len(A))])
+    n = len(A)
+    scores = np.array([float(np.abs(A - np.roll(B, -s, axis=0)).sum())
+                       for s in range(n)])
     shift = int(np.argmin(scores))
     spread = float(scores.std())
     separation = float((np.median(scores) - scores[shift]) / spread
                        if spread > 0 else 0.0)
-    return shift, separation, scores
+
+    rivals = np.ones(n, dtype=bool)
+    for d in range(-3, 4):
+        rivals[(shift + d) % n] = False
+    depth = float(np.median(scores) - scores[shift])
+    margin = float((scores[rivals].min() - scores[shift]) / depth
+                   if depth > 0 and rivals.any() else 0.0)
+    return shift, separation, margin, scores
 
 
 def residual_lateral_shift(prof_pre, prof_post, shift, search_px=25):
@@ -677,43 +704,39 @@ def estimate_rotation_offset(pre_dir, post_dir, row_lo=0.30, row_hi=0.70,
     step = _uniform_step(ang_pre) if np.array_equal(ang_pre, ang_post) else None
     notes = []
 
-    shift = separation = None
+    shift = separation = margin = None
     dphi = 0.0
     if step and prof_pre.shape == prof_post.shape:
-        shift, separation, _ = match_profile_shift(prof_pre, prof_post)
+        shift, separation, margin, _ = match_profile_shift(prof_pre, prof_post)
         # pre[i] pairs with post[i + shift], so Δφ = −shift·step.
         dphi = (-shift * step + 180.0) % 360.0 - 180.0
     else:
         notes.append("the two scans are not on one uniform angle grid, so they "
                      "cannot be matched frame to frame")
 
-    # Two conditions to trust the answer.  First, one rotation must fit clearly
-    # better than the rest.  Second, no sideways offset may be left over: a
-    # dosimeter that was moved as well as turned cannot be fixed by re-pairing
-    # frames, and correcting the rotation alone would leave artefacts while
-    # telling the operator everything was handled.
-    lateral_rms = None
-    if step and shift is not None:
-        lateral_rms, _ = residual_lateral_shift(prof_pre, prof_post, shift)
-
-    # Knowing the rotation and being able to fully recover the scan are separate
-    # facts.  A dosimeter that was moved as well as turned still benefits from
-    # the rotation correction, so apply it, but do not claim the scan is sound.
+    # The mount fixes the dosimeter in every degree of freedom except rotation
+    # about the vertical axis, so the rotation match alone decides whether the
+    # answer can be trusted.
     # bool()/float() throughout: numpy scalars are not JSON serialisable, and
     # this dict is written straight to rotation_offset.json.
-    rotation_known = bool(step and separation is not None
-                          and separation >= ROTATION_MATCH_MIN_SIGMA)
-    confident = bool(rotation_known and lateral_rms is not None
-                     and lateral_rms <= ROTATION_MAX_LATERAL_PX)
+    confident = bool(step and separation is not None
+                     and separation >= ROTATION_MATCH_MIN_SIGMA)
     if step and separation is not None and separation < ROTATION_MATCH_MIN_SIGMA:
         notes.append(f"no rotation fits clearly better than the others "
                      f"(separation {separation:.1f}σ, need "
                      f"{ROTATION_MATCH_MIN_SIGMA:.1f}σ)")
-    if lateral_rms is not None and lateral_rms > ROTATION_MAX_LATERAL_PX:
-        notes.append(f"the dosimeter is still {lateral_rms:.1f} px sideways of "
-                     f"where it was after correcting the rotation, so it was "
-                     f"moved as well as turned; re-pairing frames cannot fix "
-                     f"that on its own")
+
+    # Measured but not a gate: the mount rules out a sideways shift, so a
+    # reading here points at the rig rather than at how the dosimeter was
+    # loaded.  Kept because it is a cheap canary for stage or camera drift.
+    lateral_rms = None
+    if step and shift is not None:
+        lateral_rms, _ = residual_lateral_shift(prof_pre, prof_post, shift)
+        if lateral_rms > ROTATION_MAX_LATERAL_PX:
+            notes.append(f"the projections sit {lateral_rms:.1f} px sideways of "
+                         f"the pre-irradiation scan even after correcting the "
+                         f"rotation; the mount does not allow that, so check the "
+                         f"stage, camera and lamp alignment")
 
     # Secondary, informational only.  The centroid sinusoid resolves sub-step,
     # but off-axis dose exists only in the post frames and pulls its phase
@@ -735,12 +758,12 @@ def estimate_rotation_offset(pre_dir, post_dir, row_lo=0.30, row_hi=0.70,
         "step_deg": step,
         "frame_shift": shift,
         "match_separation_sigma": separation,
+        "match_margin": margin,
         "residual_lateral_px": lateral_rms,
         "amplitude_pre_px": amp_pre, "amplitude_post_px": amp_post,
         "residual_pre_px": rms_pre,  "residual_post_px": rms_post,
         "n_pre": len(ang_pre), "n_post": len(ang_post),
         "confident": confident,
-        "rotation_known": rotation_known,
         "notes": notes,
     }
 
@@ -2165,7 +2188,7 @@ class ScanWorker(QObject):
                   "dosimeter to line it up the same way round as it was for the "
                   "pre-irradiation scan, before you start.")
 
-        if not r["rotation_known"]:
+        if not r["confident"]:
             self.log.emit("⚠ Orientation check inconclusive, subtracting without "
                           "correction.")
             self.alert.emit(
@@ -2178,40 +2201,29 @@ class ScanWorker(QObject):
                 "for this scan may be wrong." + ADVICE)
             return 0.0
 
-        if applied != 0.0:
-            self.log.emit(f"Correcting for a {dphi:+.0f}° dosimeter rotation: "
-                          f"pairing each pre-irradiation frame with the "
-                          f"post-irradiation frame {r['frame_shift']} positions "
-                          f"along.")
-
-        # Moved as well as turned: the rotation correction still helps, but
-        # re-pairing frames cannot undo a sideways shift, so say so plainly
-        # rather than reporting a clean success.
-        if not r["confident"]:
-            self.log.emit("⚠ Dosimeter also moved sideways; the rotation is "
-                          "corrected but the scan may still be affected.")
-            self.alert.emit(
-                "Dosimeter moved",
-                f"The dosimeter went back into the holder about {abs(dphi):.0f}° "
-                f"round from where it was for the pre-irradiation scan, and it "
-                f"is also sitting about "
-                f"{r['residual_lateral_px']:.0f} pixels to one side.\n\n"
-                f"The app has corrected the turn, but it cannot correct the "
-                f"sideways shift. The dose results for this scan may still be "
-                f"affected." + ADVICE)
-            return applied
-
         if applied == 0.0:
             self.log.emit("✓ Dosimeter orientation matches the pre-irradiation scan.")
             return 0.0
 
+        self.log.emit(f"Correcting for a {dphi:+.0f}° dosimeter rotation: "
+                      f"pairing each pre-irradiation frame with the "
+                      f"post-irradiation frame {r['frame_shift']} positions along.")
+
         if abs(dphi) >= ROTATION_ALERT_DEG:
+            lateral = r["residual_lateral_px"]
+            # Only claim the scan is sound when nothing else looks out of place.
+            outcome = (
+                "The app has lined the two scans back up automatically, so this "
+                "scan is still good and you do not need to do anything."
+                if lateral is not None and lateral <= ROTATION_MAX_LATERAL_PX else
+                "The app has lined the two scans back up automatically, but the "
+                "images are also shifted sideways, which the holder should not "
+                "allow. Please mention this to whoever looks after the scanner.")
             self.alert.emit(
                 "Dosimeter was turned round",
                 f"The dosimeter went back into the holder about {abs(dphi):.0f}° "
                 f"round from where it was for the pre-irradiation scan.\n\n"
-                f"The app has lined the two scans back up automatically, so this "
-                f"scan is still good and you do not need to do anything." + ADVICE)
+                + outcome + ADVICE)
         return applied
 
     def _compute_subtracted(self, pre_dir: Path, post_dir: Path, subtracted_dir: Path,
@@ -2368,8 +2380,14 @@ class ReconWorker(QObject):
             #  ΔA = A_post − A_pre = −log(I_post/I₀) − (−log(I_pre/I₀)))
             enc = read_subtracted_encoding(image_dir)
             if enc["version"] < SUBTRACT_ENCODING_VERSION:
-                self.log.emit(f"ΔA encoding v{enc['version']} (legacy, unsigned). "
-                              f"Re-run the subtraction to get signed ΔA.")
+                # The sidecar carries the actual scale and offset, so older
+                # scans still decode correctly; only the range differs.
+                self.log.emit(
+                    f"ΔA encoding v{enc['version']} "
+                    f"(range {-enc['od_offset']:+g} to "
+                    f"{65535.0 / enc['od_scale'] - enc['od_offset']:+g} OD). "
+                    f"Re-run the subtraction for the current v"
+                    f"{SUBTRACT_ENCODING_VERSION} range and the rotation check.")
             P = imgs / enc["od_scale"] - enc["od_offset"]
 
             # Take angles from the filenames; they are authoritative now that

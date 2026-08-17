@@ -28,8 +28,12 @@ Next steps, in order:
 5. Get a real Δφ for `scan_20260701_101800` by re-running the subtraction on its
    existing `pre/` and `post/` folders. The measurement and correction now run
    automatically, so this also repairs that scan. Check `rotation_offset.json`
-   afterwards: `confident` tells you whether the dosimeter was only turned, or
-   moved as well.
+   afterwards, above all `match_separation_sigma`: that scan had bubbles in the
+   pre-scan, and whether they survived to the post scan decides whether the
+   correction is trustworthy. If the specks and stars in its sanity check are
+   bubbles that stayed put, correcting the rotation should make them cancel and
+   they should largely disappear. If they persist, they changed between
+   sessions and no rotation correction can remove them.
 6. Check the two rotation thresholds against real scans (see the calibration
    note below). They have only ever been exercised on synthetic data.
 
@@ -42,16 +46,17 @@ vial wall (the highest-contrast edge in the frame) leaves a bipolar residual
 that survives the subtraction and drives the streak artefacts.
 
 As of 2026-08-17 the **rotational** component is measured and corrected
-automatically (see below). What remains uncorrected:
+automatically (see below).
 
-- **Translation.** A dosimeter set down sideways of where it was cannot be fixed
-  by re-pairing frames. It is now *detected* (`residual_lateral_px`) and the
-  operator is told the scan may be affected, but not corrected. It is correctable
-  in principle by shifting the projections column-wise before subtracting, which
-  is the obvious next piece of work if real scans show it happening.
-- **Tilt.** Neither detected nor corrected. A tilted dosimeter would show up as a
-  lateral offset that varies with depth, so the current single-band measurement
-  would see only a partial signal.
+**Rotation about the vertical axis is the only degree of freedom that matters
+here.** The mount fixes the dosimeter in every other respect, so translation and
+tilt are not concerns and are deliberately not corrected. `residual_lateral_px`
+is still measured, but only as a canary for the stage, camera or lamp drifting;
+it is logged for whoever maintains the rig and never raised at the operator, who
+cannot act on it. If the mounting arrangement ever changes, revisit this.
+
+What remains uncorrected:
+
 - **Sub-step rotation.** The correction is quantised to the projection step, so
   it can be up to half a step out (1 degree at the usual 2 degree steps). For the
   vial wall this is negligible, since only the vial's eccentricity matters, about
@@ -62,6 +67,40 @@ automatically (see below). What remains uncorrected:
   second reconstruction.
 
 ## Decisions
+
+### 2026-08-18: harden the rotation match against bubbles
+
+The operator reported bubbles in the pre-scan for `scan_20260701_101800`, which
+is also the scan where she did not check the rotational alignment before the
+post scan. Bubbles turn out to matter for the correction, in both directions.
+
+**Bubbles that persist between sessions help.** They are high-contrast off-axis
+features, exactly what the profile match locks onto: match separation rose from
+4.1 to 5.6 sigma with six of them, and the corrected residual was unchanged.
+
+**Bubbles that differ between sessions can break it.** With six bubbles in the
+pre scan and six different ones in the post scan, squared-error matching chose a
+rotation eight steps wrong and still reported itself confident. Switching to
+absolute difference cut that to one step wrong. Across a 75-run sweep over
+random bubble counts, offsets and noise, absolute difference got 74 right, and
+the existing 2.5 sigma gate rejected the one failure (2.47 sigma) without
+rejecting any correct answer (worst correct case 2.85 sigma). That margin is
+thin, and it is the main thing to re-check against real scans.
+
+A best-versus-runner-up margin was tried as an additional gate. It separated the
+cases cleanly in a small experiment and then failed on the wider sweep (worst
+correct answer 0.108, the single wrong answer 0.256), so it is recorded in
+`rotation_offset.json` as a diagnostic but is deliberately **not** a gate. Worth
+remembering as an example of a metric that looked good on five cases.
+
+**Encoding widened to ±4 OD (v3).** A bubble present in the pre scan and gone by
+the post scan gives a large negative ΔA. The v2 floor of −1 OD clipped it, and a
+first attempt at −2 OD clipped it too once bubbles overlapped in projection.
+Rather than guess a third time, the range is now sized from the bound the count
+mask already imposes: pixels below `MIN_VALID_COUNTS` are discarded and the flat
+field is at most 255 counts, so `|A| <= log(255/10) ~ 3.2` and ±4 cannot clip.
+Because `encoding.json` stores explicit scale and offset numbers rather than
+just a version, every older scan still decodes correctly.
 
 ### 2026-08-17: measure the pre/post rotational offset automatically
 
@@ -112,17 +151,18 @@ that were actually captured. Interpolating between adjacent projections is not
 the same as rotating the sample, and 2 degree steps are fine enough that it is
 not worth the approximation.
 
-**Two independent conditions gate trust**, which is a distinction worth keeping:
-`rotation_known` (one shift fits clearly better than the rest) decides whether
-to apply a correction, and `confident` (that, plus no leftover lateral offset)
-decides what to tell the operator. A dosimeter moved as well as turned still
-benefits from the rotation correction, so it is applied, but the operator is
-told the scan may still be affected rather than being told it is fine.
+**Trust rests on the rotation match alone** (`confident`), because the mount
+rules out everything else. An intermediate version also gated on the leftover
+lateral offset and raised a "Dosimeter moved" dialog, which was wrong for this
+rig: the operator physically cannot cause a sideways shift, so blaming them for
+one is a false alarm that would only teach them to dismiss dialogs.
 
 Thresholds `ROTATION_MATCH_MIN_SIGMA` (2.5) and `ROTATION_MAX_LATERAL_PX` (2.0)
 are calibrated on synthetic scans only. The separation margin between a genuine
-match (4.1 sigma) and a centred sample carrying no information (2.4 sigma) is
-not large, so revisit this against real data.
+match (4.1 sigma) and a rotationally symmetric sample carrying no information
+(2.4 sigma) is not large, so revisit this against real data. Note the failure is
+self-limiting: a sample with no rotational signature also has little that a
+rotation could misalign.
 
 The dose signal itself survives an affected scan. The post scan is internally
 self-consistent (one continuous rotation at fixed geometry), so the dose
