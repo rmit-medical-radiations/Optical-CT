@@ -493,6 +493,153 @@ def projection_angles(img_dir, n_expected: int, degree_increment: float) -> np.n
     return np.arange(n_expected, dtype=np.float32) * float(degree_increment)
 
 
+def projection_centroids(img_dir, row_lo=0.30, row_hi=0.70, margin=0.15):
+    """
+    Horizontal centroid of attenuation for every projection in a directory.
+
+    row_lo/row_hi select a band of rows as a fraction of image height, keeping
+    the measurement inside the sample and away from the nozzle holder and the
+    meniscus.  margin excludes that fraction of columns each side, because the
+    dark frame borders otherwise dominate the centroid (the same trap that made
+    a naive centroid useless for axis detection).
+
+    Returns (angles_deg, centroids_px), sorted by angle.
+    """
+    files = []
+    for f in sorted(Path(img_dir).glob("*.png")):
+        m = ANGLE_RE.match(f.name)
+        if m:
+            files.append((int(m.group("angle")), f))
+    if not files:
+        raise RuntimeError(f"No img_NNNN_DDD_deg.png projections in {img_dir}")
+    files.sort()
+
+    angles, centroids = [], []
+    for angle, f in files:
+        img = imread_counts(f)
+        if img is None:
+            raise RuntimeError(f"Failed to read {f}")
+        h, w = img.shape
+        band = img[int(h * row_lo):int(h * row_hi)]
+        x0, x1 = int(w * margin), int(w * (1.0 - margin))
+        band = band[:, x0:x1]
+
+        # Attenuation against this frame's own bright reference, so lamp drift
+        # between sessions cannot bias the centroid.
+        ref = float(np.percentile(band, 99.0))
+        A = -np.log(np.clip(band, MIN_VALID_COUNTS, None)
+                    / max(ref, MIN_VALID_COUNTS))
+        weight = np.clip(A, 0.0, None).sum(axis=0)
+        # Remove a flat pedestal so only structure above background counts.
+        weight = np.clip(weight - np.median(weight), 0.0, None)
+        total = weight.sum()
+        if total <= 0:
+            raise RuntimeError(f"No attenuation structure found in {f.name}")
+
+        cols = np.arange(weight.size, dtype=np.float64) + x0
+        angles.append(float(angle))
+        centroids.append(float((weight * cols).sum() / total))
+
+    return np.asarray(angles), np.asarray(centroids)
+
+
+def fit_sinusoid(angles_deg, values):
+    """
+    Least-squares fit of c(θ) = c0 + a·sin θ + b·cos θ.
+
+    Returns (offset, amplitude, phase_deg, residual_rms).  The phase carries an
+    arbitrary constant from this parameterisation, which cancels when two fits
+    are differenced.
+    """
+    th = np.deg2rad(np.asarray(angles_deg, dtype=np.float64))
+    M = np.stack([np.ones_like(th), np.sin(th), np.cos(th)], axis=1)
+    vals = np.asarray(values, dtype=np.float64)
+    coef, *_ = np.linalg.lstsq(M, vals, rcond=None)
+    c0, a, b = coef
+    resid = vals - M @ coef
+    return (float(c0), float(np.hypot(a, b)),
+            float(np.degrees(np.arctan2(b, a)) % 360.0),
+            float(np.sqrt(np.mean(resid ** 2))))
+
+
+def _xcorr_offset(angles, c_pre, c_post):
+    """Independent Δφ estimate by circular cross-correlation, in whole steps."""
+    if len(c_pre) != len(c_post):
+        return None, None
+    steps = np.diff(angles)
+    if len(steps) == 0 or not np.allclose(steps, steps[0]):
+        return None, None
+    step = float(steps[0])
+    a = np.asarray(c_pre) - np.mean(c_pre)
+    b = np.asarray(c_post) - np.mean(c_post)
+    # c_post[i] = c_pre[i + Δφ/step], so the best lag is Δφ in steps.
+    lag = int(np.argmax([float(np.dot(np.roll(a, -L), b))
+                         for L in range(len(a))]))
+    return (lag * step + 180.0) % 360.0 - 180.0, step
+
+
+def estimate_rotation_offset(pre_dir, post_dir, row_lo=0.30, row_hi=0.70,
+                             margin=0.15) -> dict:
+    """
+    Estimate the rotational offset Δφ between a pre and post scan.
+
+    The dosimeter is removed, irradiated, and reseated between sessions, so it
+    can come back rotated about the vertical axis.  Nothing in the acquisition
+    records this, and ΔA = A_post − A_pre assumes it is zero; when it is not,
+    static structure (above all the vial wall) fails to cancel and leaves a
+    bipolar residual that dominates the reconstruction.
+
+    At motor angle θ a sample reseated by Δφ shows what the pre scan saw at
+    θ + Δφ, so the two centroid sinusoids differ in phase by exactly Δφ.
+
+    This needs the sample to be at least slightly off-axis: a perfectly centred
+    one produces no sinusoid and no recoverable phase.  `confident` reports
+    whether the numbers are trustworthy, and `notes` says why if not.
+    """
+    ang_pre,  c_pre  = projection_centroids(pre_dir,  row_lo, row_hi, margin)
+    ang_post, c_post = projection_centroids(post_dir, row_lo, row_hi, margin)
+
+    c0_pre,  amp_pre,  ph_pre,  rms_pre  = fit_sinusoid(ang_pre,  c_pre)
+    c0_post, amp_post, ph_post, rms_post = fit_sinusoid(ang_post, c_post)
+    dphi = (ph_post - ph_pre + 180.0) % 360.0 - 180.0
+
+    dphi_xc, step = (_xcorr_offset(ang_pre, c_pre, c_post)
+                     if np.array_equal(ang_pre, ang_post) else (None, None))
+
+    shift = frac = None
+    if step:
+        exact = -dphi / step        # pre[i] pairs with post[i + shift]
+        shift = int(round(exact)) % len(ang_pre)
+        frac = abs(exact - round(exact)) * step
+
+    notes = []
+    for name, amp, res in (("pre", amp_pre, rms_pre), ("post", amp_post, rms_post)):
+        if amp < 1.0:
+            notes.append(f"{name} sinusoid is only {amp:.2f} px — the sample is "
+                         f"too well centred for the phase to mean anything")
+        elif amp < 3.0 * res:
+            notes.append(f"{name} sinusoid ({amp:.2f} px) is weak against its "
+                         f"residual ({res:.2f} px)")
+    if dphi_xc is not None and step and \
+            abs(((dphi - dphi_xc + 180.0) % 360.0) - 180.0) > 1.5 * step:
+        notes.append("the two estimates disagree by more than a step, so "
+                     "something other than a pure rotation differs between "
+                     "the scans (translation, tilt, or a different position)")
+
+    return {
+        "delta_phi_deg": dphi,
+        "delta_phi_xcorr_deg": dphi_xc,
+        "step_deg": step,
+        "frame_shift": shift,
+        "residual_after_shift_deg": frac,
+        "amplitude_pre_px": amp_pre, "amplitude_post_px": amp_post,
+        "residual_pre_px": rms_pre,  "residual_post_px": rms_post,
+        "n_pre": len(ang_pre), "n_post": len(ang_post),
+        "confident": not notes,
+        "notes": notes,
+    }
+
+
 def counts_from_raw(img: np.ndarray) -> np.ndarray:
     """Convert a captured or stored frame to sensor counts as float32."""
     a = img.astype(np.float32)
@@ -1570,6 +1717,7 @@ class ScanWorker(QObject):
       scan_progress(pct)    — 0..100 during the rotation phase
       image_ready(ndarray)  — latest captured frame
       log(str)
+      alert(title, message) — shown to the operator as a dialog
       finished(ok, message)
     """
     phase_ready    = pyqtSignal(int)
@@ -1580,6 +1728,7 @@ class ScanWorker(QObject):
     image_ready    = pyqtSignal(object)
     lamp_changed   = pyqtSignal(bool)   # True=on, False=off
     log            = pyqtSignal(str)
+    alert          = pyqtSignal(str, str)   # title, plain-language message
     finished       = pyqtSignal(bool, str)
 
     def __init__(self, cfg: dict):
@@ -1777,6 +1926,9 @@ class ScanWorker(QObject):
             if self._abort:
                 self.finished.emit(False, "Scan aborted by user"); return
 
+            # ── Check the dosimeter went back in the same orientation ────────
+            self._check_rotation_offset(pre_dir, post_dir)
+
             # ── Subtraction in OD domain: ΔA = A_post − A_pre ───────────────
             self.log.emit("Computing ΔA = A_post − A_pre projections (OD domain)…")
             self.scan_progress.emit(0)
@@ -1868,6 +2020,57 @@ class ScanWorker(QObject):
                 self.scan_progress.emit(pct)
 
         return True
+
+    def _check_rotation_offset(self, pre_dir: Path, post_dir: Path):
+        """
+        Measure how far the dosimeter was rotated between the two sessions and
+        tell the operator in plain language if it matters.
+
+        The subtraction assumes the dosimeter goes back in exactly the same
+        orientation.  Nobody can see a 30° error by eye once the vial is in the
+        holder, and the consequence only shows up days later in a reconstruction
+        that nobody at the scanner will be looking at.  So the app measures it
+        and says so while the operator is still standing there.
+
+        Never fatal: the images are already saved, and a scan with a known
+        offset is far more useful than one where the offset is unknown.
+        """
+        self.log.emit("Checking the dosimeter went back the same way round…")
+        try:
+            r = estimate_rotation_offset(pre_dir, post_dir)
+        except Exception as e:
+            self.log.emit(f"⚠ Could not check dosimeter orientation: {e}")
+            return
+
+        dphi = r["delta_phi_deg"]
+        (pre_dir.parent / "rotation_offset.json").write_text(json.dumps(r, indent=2))
+        self.log.emit(f"Dosimeter orientation: {dphi:+.1f}° relative to the "
+                      f"pre-irradiation scan "
+                      f"({'reliable' if r['confident'] else 'UNRELIABLE'} measurement).")
+        for note in r["notes"]:
+            self.log.emit(f"  · {note}")
+
+        threshold = max(r["step_deg"] or 2.0, 2.0)
+        if not r["confident"]:
+            self.log.emit("⚠ Orientation check inconclusive — see the notes above.")
+            return
+        if abs(dphi) < threshold:
+            self.log.emit("✓ Dosimeter orientation matches the pre-irradiation scan.")
+            return
+
+        self.log.emit(f"⚠ Dosimeter appears rotated by {abs(dphi):.0f}° — "
+                      f"the subtraction assumes 0°.")
+        self.alert.emit(
+            "Dosimeter orientation",
+            f"The dosimeter looks like it went back into the holder about "
+            f"{abs(dphi):.0f}° round from where it was during the "
+            f"pre-irradiation scan.\n\n"
+            f"All the images have been saved and nothing is lost, but the dose "
+            f"results from this scan will not be right until someone corrects "
+            f"for it. Please pass this on to whoever analyses the scan.\n\n"
+            f"Next time: use the marker dot on top of the dosimeter to line it up "
+            f"the same way round as it was for the pre-irradiation scan, before "
+            f"starting the scan.")
 
     def _compute_subtracted(self, pre_dir: Path, post_dir: Path, subtracted_dir: Path,
                              flat: np.ndarray, progress_cb=None):
@@ -3315,6 +3518,7 @@ class MainWindow(QMainWindow):
         self._worker.image_ready.connect(self.preview.set_frame)
         self._worker.lamp_changed.connect(self._on_worker_lamp_changed)
         self._worker.log.connect(self._log)
+        self._worker.alert.connect(self._on_worker_alert)
         self._worker.finished.connect(self._scan_finished)
         self._worker.finished.connect(self._thread.quit)
         self._thread.start()
@@ -3397,6 +3601,10 @@ class MainWindow(QMainWindow):
         self.lamp_btn.setChecked(on)
         self.lamp_btn.setText("☀  Lamp ON" if on else "Lamp OFF")
         self.lamp_btn.blockSignals(False)
+
+    def _on_worker_alert(self, title: str, message: str):
+        """Show a worker's plain-language warning to the operator as a dialog."""
+        QMessageBox.warning(self, title, message)
 
     # ── Scan selector ─────────────────────────────────────────────────────────
 

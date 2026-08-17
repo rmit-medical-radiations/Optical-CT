@@ -137,6 +137,8 @@ Optical density change between pre- and post-irradiation scans:
 
 The flat-field term cancels exactly, making the measurement independent of lamp intensity drift between sessions.
 
+After the post scan and before subtracting, the app measures how far the dosimeter was rotated about the vertical axis between the two sessions, and warns the operator with a dialog if it has moved. The estimate comes from the horizontal centroid of attenuation in each projection: for a sample not perfectly centred on the axis, that centroid traces a sinusoid against angle, and reseating the dosimeter rotated by Δφ shifts the sinusoid's phase by exactly Δφ. A circular cross-correlation of the same two series gives an independent check. The result goes to `rotation_offset.json`, including a `confident` flag, since a perfectly centred sample produces no sinusoid and no recoverable phase. Note that the offset is currently reported, not corrected.
+
 Pre and post frames are paired by the rotation angle in the filename, not by sort order, so two scans that used a different starting angle or step size cannot be silently mismatched.  Pixels where either frame reads below `MIN_VALID_COUNTS` (10 counts) are masked to ΔA = 0: down there the log ratio is quantisation noise, and a frame reading zero would otherwise produce a spurious ~14 OD spike at the vial wall.
 
 ΔA projections are encoded as 16-bit PNG in offset binary, `value = (ΔA + 1) × 65535 / 5`, covering −1 to +4 OD.  Negative ΔA is kept rather than clipped, because clipping at zero rectifies noise and gives zero-dose regions a positive DC offset after FBP.  The encoding is recorded in `subtracted/encoding.json`; scans without that file are read with the older unsigned `OD_SCALE = 65535 / 4` scheme.
