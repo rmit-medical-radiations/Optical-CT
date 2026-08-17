@@ -25,11 +25,13 @@ Next steps, in order:
    scans now decode 256x larger than they used to (correctly, see below).
 4. Re-run the sanity check on `scan_20260701_101800` and see how much of the
    vial wall ring survives.
-5. Get a real Δφ for `scan_20260701_101800`. The estimator now runs
-   automatically on new post scans, but that scan predates it, so its number
-   has to come from re-running the subtraction on the existing `pre/` and
-   `post/` folders. The value decides which of the two correction routes below
-   is worth building.
+5. Get a real Δφ for `scan_20260701_101800` by re-running the subtraction on its
+   existing `pre/` and `post/` folders. The measurement and correction now run
+   automatically, so this also repairs that scan. Check `rotation_offset.json`
+   afterwards: `confident` tells you whether the dosimeter was only turned, or
+   moved as well.
+6. Check the two rotation thresholds against real scans (see the calibration
+   note below). They have only ever been exercised on synthetic data.
 
 ### Known open problem: pre/post registration
 
@@ -39,23 +41,25 @@ and any translation or rotation offset is uncorrected. A sub-pixel offset at the
 vial wall (the highest-contrast edge in the frame) leaves a bipolar residual
 that survives the subtraction and drives the streak artefacts.
 
-As of 2026-08-17 the rotational component is at least **measured** and reported
-(see below), but not corrected. Two ways to correct it, once a real Δφ has been
-measured on a scan:
+As of 2026-08-17 the **rotational** component is measured and corrected
+automatically (see below). What remains uncorrected:
 
-1. If Δφ is near a multiple of the step, re-pair post frame `i + shift` with pre
-   frame `i`. `rotation_offset.json` already reports the shift to use. Cheap,
-   and the leftover error is under half a step. For the wall that is negligible
-   (only the vial's eccentricity matters, about 0.5 mm), but a bubble 15 mm
-   off-axis still smears a few pixels.
-2. If Δφ is arbitrary, subtract in the volume domain: reconstruct pre and post
-   separately, rotate the pre volume by Δφ about the Y axis, then subtract. FBP
-   is linear so this is equivalent, and it handles any angle exactly. Costs a
-   second reconstruction.
-
-Translation and tilt are still unhandled by either. The cross-correlation check
-in the estimator will disagree with the phase fit when the difference is not a
-pure rotation, which is the signal that one of those is present.
+- **Translation.** A dosimeter set down sideways of where it was cannot be fixed
+  by re-pairing frames. It is now *detected* (`residual_lateral_px`) and the
+  operator is told the scan may be affected, but not corrected. It is correctable
+  in principle by shifting the projections column-wise before subtracting, which
+  is the obvious next piece of work if real scans show it happening.
+- **Tilt.** Neither detected nor corrected. A tilted dosimeter would show up as a
+  lateral offset that varies with depth, so the current single-band measurement
+  would see only a partial signal.
+- **Sub-step rotation.** The correction is quantised to the projection step, so
+  it can be up to half a step out (1 degree at the usual 2 degree steps). For the
+  vial wall this is negligible, since only the vial's eccentricity matters, about
+  0.5 mm. A bubble 15 mm off-axis still smears a few pixels. If that turns out to
+  matter, the fix is to subtract in the volume domain instead: reconstruct pre and
+  post separately, rotate the pre volume by Δφ about the Y axis, then subtract.
+  FBP is linear so this is equivalent, handles any angle exactly, and costs a
+  second reconstruction.
 
 ## Decisions
 
@@ -78,23 +82,52 @@ plain-language dialog (`ScanWorker.alert`, new signal) while the operator is
 still standing there. It is never fatal: the images are already saved, and a
 scan with a known offset is much more useful than one with an unknown offset.
 
-**Method.** The horizontal centroid of attenuation in each projection traces a
-sinusoid against angle when the sample is not perfectly centred on the axis.
-Reseating by Δφ shifts that sinusoid's phase by exactly Δφ, so fitting
-`c0 + a sin θ + b cos θ` to both stacks and differencing the phases recovers it.
-A circular cross-correlation of the same two series gives an independent
-estimate. Recovers a known offset to better than 0.1 degrees on synthetic data,
-including at 12 counts RMS noise.
+**The app corrects it, it does not just report it.** An earlier version measured
+Δφ and told the operator to pass it on to whoever analysed the scan. There is no
+such person: the operator is the only one who will ever look at it. A warning
+nobody can act on is not a feature. So the correction is applied automatically
+by pairing pre frame `i` with post frame `i + shift`.
 
-**Caveat that matters:** the method needs the sample to be slightly off-axis. A
-perfectly centred sample produces no sinusoid and no recoverable phase, so the
-result carries a `confident` flag and `notes`. Do not silently trust
-`delta_phi_deg` without checking it.
+**Method, and why the obvious one fails.** The first implementation used the
+horizontal centroid of attenuation, which traces a sinusoid against angle for an
+off-axis sample; reseating shifts its phase by exactly Δφ. That worked on clean
+synthetic data and then failed the moment the test included dose: with dose
+present only in the post frames and off-axis, it returned 37.6 degrees for a
+34 degree truth. A centroid is a first moment, so any added absorbance drags it.
 
-The dose signal itself should still be recoverable from an affected scan. The
-post scan is internally self-consistent (one continuous rotation at fixed
-geometry), so the dose reconstructs correctly in its own frame; the rotation
-residual is additive contamination on top, not a distortion of the dose.
+The working method matches **whole projection profiles** between the two stacks
+and takes the frame shift minimising the squared difference. Sharp
+high-contrast structure dominates that comparison, so a weak added dose barely
+moves it. Recovers Δφ exactly (to the step) in every synthetic case tried,
+including with off-axis dose and at 12 counts RMS noise. The corrected structure
+residual matches the never-rotated baseline to 5 significant figures, so the
+correction is not merely an improvement, it is a full recovery.
+
+The centroid fit is kept as `delta_phi_phase_deg` for a sub-step cross-check,
+but it is informational and explicitly never allowed to veto the profile match.
+An earlier iteration did let it veto, and it rejected every correct answer.
+
+**Correction is quantised to a whole step** so that every pair is two frames
+that were actually captured. Interpolating between adjacent projections is not
+the same as rotating the sample, and 2 degree steps are fine enough that it is
+not worth the approximation.
+
+**Two independent conditions gate trust**, which is a distinction worth keeping:
+`rotation_known` (one shift fits clearly better than the rest) decides whether
+to apply a correction, and `confident` (that, plus no leftover lateral offset)
+decides what to tell the operator. A dosimeter moved as well as turned still
+benefits from the rotation correction, so it is applied, but the operator is
+told the scan may still be affected rather than being told it is fine.
+
+Thresholds `ROTATION_MATCH_MIN_SIGMA` (2.5) and `ROTATION_MAX_LATERAL_PX` (2.0)
+are calibrated on synthetic scans only. The separation margin between a genuine
+match (4.1 sigma) and a centred sample carrying no information (2.4 sigma) is
+not large, so revisit this against real data.
+
+The dose signal itself survives an affected scan. The post scan is internally
+self-consistent (one continuous rotation at fixed geometry), so the dose
+reconstructs correctly in its own frame; the rotation residual is additive
+contamination on top, not a distortion of the dose.
 
 ### 2026-08-17: projection encoding and pairing rework
 

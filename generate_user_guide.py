@@ -477,12 +477,20 @@ pdf.step(4, 'Click "CAPTURE POST SCAN" and follow the same four-phase sequence.'
          'Phase (3) is skipped.  Phase (4) captures the post-irradiation projections.  '
          'The lamp remains on after the scan completes.')
 pdf.step(5, 'The app checks the dosimeter went back in the same orientation.',
-         'It measures how far the dosimeter was rotated between the two sessions.  '
-         'If it has moved, a dialog says so before the results are produced.  '
-         'Nothing is lost when this happens: the images are all saved, and the '
-         'measured angle is written to rotation_offset.json.  Pass the warning on '
-         'to whoever analyses the scan, because the dose numbers will need '
-         'correcting for it.')
+         'It measures how far the dosimeter was turned between the two sessions and '
+         'corrects for it automatically, so you do not have to do anything.  '
+         'If it was turned by more than a few degrees a dialog tells you so, purely '
+         'so you know to line it up better next time.  '
+         'The measurement is saved to rotation_offset.json.')
+
+pdf.warning(
+    'Two dialogs mean the scan may not be fully corrected: "Dosimeter moved" '
+    '(the dosimeter was shifted sideways as well as turned, which the app cannot '
+    'correct) and "Check the dosimeter position" (the app could not work out how '
+    'it was sitting).  In both cases the scan is still saved and processed, but '
+    'the dose results may be wrong.  Re-scanning is not possible once the '
+    'dosimeter has been irradiated, so take care mounting it.'
+)
 
 pdf.step(6, 'On completion, ΔA = A_post − A_pre is computed for every projection.',
          'Frames are paired by the rotation angle in the filename, so a pre and post '
@@ -624,9 +632,11 @@ dirs = [
      '(value = (ΔA + 1) × 65535/5, covering −1 to +4 OD, so negative ΔA is kept).  '
      'encoding.json records the format.  Input to the FBP reconstruction.'),
     ('rotation_offset.json',
-     'How far the dosimeter was rotated between the pre and post sessions, measured '
-     'automatically after the post scan.  delta_phi_deg is the angle; confident says '
-     'whether the measurement can be trusted, and notes says why if it cannot.'),
+     'How far the dosimeter was turned between the pre and post sessions, measured '
+     'and corrected automatically after the post scan.  delta_phi_deg is the angle '
+     'applied; confident says whether the scan came out fully corrected, '
+     'residual_lateral_px is any leftover sideways offset, and notes says what was '
+     'wrong if anything was.'),
     ('calibration/',
      'Dark and flat calibration frames (dark.npy, flat.npy) captured at scan time.  '
      'Bundled here so the correct calibration is always available alongside the '

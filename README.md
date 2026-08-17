@@ -137,7 +137,18 @@ Optical density change between pre- and post-irradiation scans:
 
 The flat-field term cancels exactly, making the measurement independent of lamp intensity drift between sessions.
 
-After the post scan and before subtracting, the app measures how far the dosimeter was rotated about the vertical axis between the two sessions, and warns the operator with a dialog if it has moved. The estimate comes from the horizontal centroid of attenuation in each projection: for a sample not perfectly centred on the axis, that centroid traces a sinusoid against angle, and reseating the dosimeter rotated by Δφ shifts the sinusoid's phase by exactly Δφ. A circular cross-correlation of the same two series gives an independent check. The result goes to `rotation_offset.json`, including a `confident` flag, since a perfectly centred sample produces no sinusoid and no recoverable phase. Note that the offset is currently reported, not corrected.
+After the post scan and before subtracting, the app measures how far the dosimeter was rotated about the vertical axis between the two sessions, corrects for it, and tells the operator what it did. The dosimeter is removed and reseated between sessions, so this happens; left uncorrected it stops static structure (above all the vial wall) from cancelling, and the residual dominates the reconstruction.
+
+Δφ comes from matching whole projection profiles between the two stacks and taking the frame shift that fits best. Matching full profiles rather than a summary statistic is what makes it usable on a real scan: the post frames contain dose that the pre frames do not, and any single moment of the profile (a centroid above all) is pulled off by that extra absorbance. The correction is applied by pairing pre frame `i` with post frame `i + shift`, so every pair is two frames that were actually captured, never an interpolation. It therefore resolves Δφ only to a whole step, at most half a step out.
+
+Two things must hold before the app trusts the answer, both recorded in `rotation_offset.json`:
+
+- One rotation must fit clearly better than the rest (`match_separation_sigma`). A sample perfectly centred on the axis carries no rotational information and fails this.
+- No sideways offset may be left over (`residual_lateral_px`). A dosimeter moved as well as turned cannot be fixed by re-pairing frames; the app still applies the rotation, but says the scan may be affected rather than reporting success.
+
+The centroid sinusoid is still fitted, as `delta_phi_phase_deg`, for a sub-step cross-check. It is informational and never overrides the profile match.
+
+Both thresholds (`ROTATION_MATCH_MIN_SIGMA`, `ROTATION_MAX_LATERAL_PX`) are calibrated on synthetic scans and may want adjusting against real data.
 
 Pre and post frames are paired by the rotation angle in the filename, not by sort order, so two scans that used a different starting angle or step size cannot be silently mismatched.  Pixels where either frame reads below `MIN_VALID_COUNTS` (10 counts) are masked to ΔA = 0: down there the log ratio is quantisation noise, and a frame reading zero would otherwise produce a spurious ~14 OD spike at the vial wall.
 

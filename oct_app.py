@@ -198,6 +198,20 @@ COUNT_SUBDIV = 256.0
 # at 3 counts a single count is a 33% change, i.e. ~0.3 OD per step.
 MIN_VALID_COUNTS = 10.0
 
+# A reseating rotation this large or larger is worth interrupting the operator
+# over.  Smaller ones are within normal mounting tolerance and are corrected
+# silently: a dialog on every scan would just train them to click it away.
+ROTATION_ALERT_DEG = 5.0
+
+# How far the best-fitting rotation must stand clear of the alternatives, in
+# standard deviations, before the app trusts it enough to correct by it.
+ROTATION_MATCH_MIN_SIGMA = 2.5
+
+# Sideways offset still left after correcting the rotation, in detector pixels,
+# beyond which the dosimeter was clearly moved as well as turned.  Re-pairing
+# frames cannot fix that, so the app says so rather than claiming success.
+ROTATION_MAX_LATERAL_PX = 2.0
+
 
 STYLESHEET = f"""
 QMainWindow, QWidget {{
@@ -493,17 +507,18 @@ def projection_angles(img_dir, n_expected: int, degree_increment: float) -> np.n
     return np.arange(n_expected, dtype=np.float32) * float(degree_increment)
 
 
-def projection_centroids(img_dir, row_lo=0.30, row_hi=0.70, margin=0.15):
+def projection_profiles(img_dir, row_lo=0.30, row_hi=0.70, margin=0.15):
     """
-    Horizontal centroid of attenuation for every projection in a directory.
+    Per-column attenuation profile of every projection in a directory.
 
     row_lo/row_hi select a band of rows as a fraction of image height, keeping
     the measurement inside the sample and away from the nozzle holder and the
     meniscus.  margin excludes that fraction of columns each side, because the
-    dark frame borders otherwise dominate the centroid (the same trap that made
-    a naive centroid useless for axis detection).
+    dark frame borders otherwise dominate any moment of the profile (the same
+    trap that made a naive centroid useless for axis detection).
 
-    Returns (angles_deg, centroids_px), sorted by angle.
+    Returns (angles_deg, profiles, x0) with profiles shaped (n_angles, n_cols),
+    sorted by angle.  x0 is the column index the profiles start at.
     """
     files = []
     for f in sorted(Path(img_dir).glob("*.png")):
@@ -514,33 +529,34 @@ def projection_centroids(img_dir, row_lo=0.30, row_hi=0.70, margin=0.15):
         raise RuntimeError(f"No img_NNNN_DDD_deg.png projections in {img_dir}")
     files.sort()
 
-    angles, centroids = [], []
+    angles, profiles, x0 = [], [], None
     for angle, f in files:
         img = imread_counts(f)
         if img is None:
             raise RuntimeError(f"Failed to read {f}")
         h, w = img.shape
-        band = img[int(h * row_lo):int(h * row_hi)]
         x0, x1 = int(w * margin), int(w * (1.0 - margin))
-        band = band[:, x0:x1]
+        band = img[int(h * row_lo):int(h * row_hi), x0:x1]
 
         # Attenuation against this frame's own bright reference, so lamp drift
-        # between sessions cannot bias the centroid.
+        # between sessions cannot bias the comparison.
         ref = float(np.percentile(band, 99.0))
         A = -np.log(np.clip(band, MIN_VALID_COUNTS, None)
                     / max(ref, MIN_VALID_COUNTS))
-        weight = np.clip(A, 0.0, None).sum(axis=0)
-        # Remove a flat pedestal so only structure above background counts.
-        weight = np.clip(weight - np.median(weight), 0.0, None)
-        total = weight.sum()
-        if total <= 0:
-            raise RuntimeError(f"No attenuation structure found in {f.name}")
-
-        cols = np.arange(weight.size, dtype=np.float64) + x0
         angles.append(float(angle))
-        centroids.append(float((weight * cols).sum() / total))
+        profiles.append(A.mean(axis=0))
 
-    return np.asarray(angles), np.asarray(centroids)
+    return np.asarray(angles), np.asarray(profiles), int(x0)
+
+
+def profile_centroids(profiles, x0=0):
+    """Horizontal centroid of each attenuation profile, in image columns."""
+    w = np.clip(profiles - np.median(profiles, axis=1, keepdims=True), 0.0, None)
+    total = w.sum(axis=1)
+    if np.any(total <= 0):
+        raise RuntimeError("A projection has no attenuation structure to locate")
+    cols = np.arange(profiles.shape[1], dtype=np.float64) + x0
+    return (w * cols).sum(axis=1) / total
 
 
 def fit_sinusoid(angles_deg, values):
@@ -562,20 +578,70 @@ def fit_sinusoid(angles_deg, values):
             float(np.sqrt(np.mean(resid ** 2))))
 
 
-def _xcorr_offset(angles, c_pre, c_post):
-    """Independent Δφ estimate by circular cross-correlation, in whole steps."""
-    if len(c_pre) != len(c_post):
-        return None, None
-    steps = np.diff(angles)
+def _uniform_step(angles):
+    """The angular step if the projections lie on one uniform grid, else None."""
+    steps = np.diff(np.asarray(angles, dtype=np.float64))
     if len(steps) == 0 or not np.allclose(steps, steps[0]):
-        return None, None
-    step = float(steps[0])
-    a = np.asarray(c_pre) - np.mean(c_pre)
-    b = np.asarray(c_post) - np.mean(c_post)
-    # c_post[i] = c_pre[i + Δφ/step], so the best lag is Δφ in steps.
-    lag = int(np.argmax([float(np.dot(np.roll(a, -L), b))
-                         for L in range(len(a))]))
-    return (lag * step + 180.0) % 360.0 - 180.0, step
+        return None
+    return float(steps[0])
+
+
+def match_profile_shift(prof_pre, prof_post):
+    """
+    Frame shift aligning two projection stacks, by whole-profile matching.
+
+    For each candidate shift s, compare pre[i] against post[i + s] over every
+    angle and column at once, and take the s that minimises the squared
+    difference.  Matching whole profiles rather than a summary statistic is what
+    makes this usable on a real scan: the post frames contain dose that the pre
+    frames do not, and any single moment of the profile (a centroid above all)
+    is pulled off by that extra absorbance.  The sharp, high-contrast structure
+    dominates a full-profile comparison, so a weak added dose barely moves it.
+
+    Returns (shift, separation, scores).  separation is how far the winning
+    score sits below the typical one, in standard deviations; a genuine match
+    stands well clear, and a stack with nothing to lock onto does not.
+    """
+    A = np.asarray(prof_pre, dtype=np.float64)
+    B = np.asarray(prof_post, dtype=np.float64)
+    # Remove each frame's own mean level so exposure differences do not matter.
+    A = A - A.mean(axis=1, keepdims=True)
+    B = B - B.mean(axis=1, keepdims=True)
+
+    scores = np.array([float(((A - np.roll(B, -s, axis=0)) ** 2).sum())
+                       for s in range(len(A))])
+    shift = int(np.argmin(scores))
+    spread = float(scores.std())
+    separation = float((np.median(scores) - scores[shift]) / spread
+                       if spread > 0 else 0.0)
+    return shift, separation, scores
+
+
+def residual_lateral_shift(prof_pre, prof_post, shift, search_px=25):
+    """
+    Sideways offset still left between the two stacks after the frame shift.
+
+    A dosimeter that was turned *and* set down in a different spot leaves a
+    column offset that no choice of rotation can remove.  Correlating each
+    matched pair along the detector direction measures it directly, which is a
+    far sharper test than asking whether the rotation match looked convincing.
+
+    Returns (rms_px, offsets) with one offset per matched pair.
+    """
+    A = np.asarray(prof_pre, dtype=np.float64)
+    B = np.roll(np.asarray(prof_post, dtype=np.float64), -int(shift), axis=0)
+    A = A - A.mean(axis=1, keepdims=True)
+    B = B - B.mean(axis=1, keepdims=True)
+
+    lags = np.arange(-int(search_px), int(search_px) + 1)
+    offsets = []
+    for a, b in zip(A, B):
+        # np.roll wraps, but the margin crop keeps real structure away from the
+        # edges, so the wrapped tail contributes nothing that matters here.
+        offsets.append(float(lags[np.argmax([np.dot(a, np.roll(b, L))
+                                             for L in lags])]))
+    offsets = np.asarray(offsets)
+    return float(np.sqrt(np.mean(offsets ** 2))), offsets
 
 
 def estimate_rotation_offset(pre_dir, post_dir, row_lo=0.30, row_hi=0.70,
@@ -590,52 +656,91 @@ def estimate_rotation_offset(pre_dir, post_dir, row_lo=0.30, row_hi=0.70,
     bipolar residual that dominates the reconstruction.
 
     At motor angle θ a sample reseated by Δφ shows what the pre scan saw at
-    θ + Δφ, so the two centroid sinusoids differ in phase by exactly Δφ.
+    θ + Δφ.  Two independent measurements of Δφ are made:
 
-    This needs the sample to be at least slightly off-axis: a perfectly centred
-    one produces no sinusoid and no recoverable phase.  `confident` reports
-    whether the numbers are trustworthy, and `notes` says why if not.
+    Primary, and the one that gets applied: match whole projection profiles
+    between the two stacks and take the frame shift that fits best.  This is
+    robust to the dose, which exists only in the post frames and would otherwise
+    bias the estimate.  It resolves Δφ only to a whole step.
+
+    Secondary, as a cross-check and to size the leftover error: the horizontal
+    centroid of attenuation traces a sinusoid against angle when the sample is
+    off-axis, and reseating shifts that sinusoid's phase by exactly Δφ.  This
+    resolves sub-step but is pulled about by off-axis dose.
+
+    `confident` is true only when the profile match stands clear of the
+    alternatives *and* the two measurements agree; `notes` says why if not.
     """
-    ang_pre,  c_pre  = projection_centroids(pre_dir,  row_lo, row_hi, margin)
-    ang_post, c_post = projection_centroids(post_dir, row_lo, row_hi, margin)
+    ang_pre,  prof_pre,  x0 = projection_profiles(pre_dir,  row_lo, row_hi, margin)
+    ang_post, prof_post, _  = projection_profiles(post_dir, row_lo, row_hi, margin)
 
-    c0_pre,  amp_pre,  ph_pre,  rms_pre  = fit_sinusoid(ang_pre,  c_pre)
-    c0_post, amp_post, ph_post, rms_post = fit_sinusoid(ang_post, c_post)
-    dphi = (ph_post - ph_pre + 180.0) % 360.0 - 180.0
-
-    dphi_xc, step = (_xcorr_offset(ang_pre, c_pre, c_post)
-                     if np.array_equal(ang_pre, ang_post) else (None, None))
-
-    shift = frac = None
-    if step:
-        exact = -dphi / step        # pre[i] pairs with post[i + shift]
-        shift = int(round(exact)) % len(ang_pre)
-        frac = abs(exact - round(exact)) * step
-
+    step = _uniform_step(ang_pre) if np.array_equal(ang_pre, ang_post) else None
     notes = []
-    for name, amp, res in (("pre", amp_pre, rms_pre), ("post", amp_post, rms_post)):
-        if amp < 1.0:
-            notes.append(f"{name} sinusoid is only {amp:.2f} px — the sample is "
-                         f"too well centred for the phase to mean anything")
-        elif amp < 3.0 * res:
-            notes.append(f"{name} sinusoid ({amp:.2f} px) is weak against its "
-                         f"residual ({res:.2f} px)")
-    if dphi_xc is not None and step and \
-            abs(((dphi - dphi_xc + 180.0) % 360.0) - 180.0) > 1.5 * step:
-        notes.append("the two estimates disagree by more than a step, so "
-                     "something other than a pure rotation differs between "
-                     "the scans (translation, tilt, or a different position)")
+
+    shift = separation = None
+    dphi = 0.0
+    if step and prof_pre.shape == prof_post.shape:
+        shift, separation, _ = match_profile_shift(prof_pre, prof_post)
+        # pre[i] pairs with post[i + shift], so Δφ = −shift·step.
+        dphi = (-shift * step + 180.0) % 360.0 - 180.0
+    else:
+        notes.append("the two scans are not on one uniform angle grid, so they "
+                     "cannot be matched frame to frame")
+
+    # Two conditions to trust the answer.  First, one rotation must fit clearly
+    # better than the rest.  Second, no sideways offset may be left over: a
+    # dosimeter that was moved as well as turned cannot be fixed by re-pairing
+    # frames, and correcting the rotation alone would leave artefacts while
+    # telling the operator everything was handled.
+    lateral_rms = None
+    if step and shift is not None:
+        lateral_rms, _ = residual_lateral_shift(prof_pre, prof_post, shift)
+
+    # Knowing the rotation and being able to fully recover the scan are separate
+    # facts.  A dosimeter that was moved as well as turned still benefits from
+    # the rotation correction, so apply it, but do not claim the scan is sound.
+    # bool()/float() throughout: numpy scalars are not JSON serialisable, and
+    # this dict is written straight to rotation_offset.json.
+    rotation_known = bool(step and separation is not None
+                          and separation >= ROTATION_MATCH_MIN_SIGMA)
+    confident = bool(rotation_known and lateral_rms is not None
+                     and lateral_rms <= ROTATION_MAX_LATERAL_PX)
+    if step and separation is not None and separation < ROTATION_MATCH_MIN_SIGMA:
+        notes.append(f"no rotation fits clearly better than the others "
+                     f"(separation {separation:.1f}σ, need "
+                     f"{ROTATION_MATCH_MIN_SIGMA:.1f}σ)")
+    if lateral_rms is not None and lateral_rms > ROTATION_MAX_LATERAL_PX:
+        notes.append(f"the dosimeter is still {lateral_rms:.1f} px sideways of "
+                     f"where it was after correcting the rotation, so it was "
+                     f"moved as well as turned; re-pairing frames cannot fix "
+                     f"that on its own")
+
+    # Secondary, informational only.  The centroid sinusoid resolves sub-step,
+    # but off-axis dose exists only in the post frames and pulls its phase
+    # about, so it is reported and never allowed to veto the profile match.
+    c_pre, c_post = profile_centroids(prof_pre, x0), profile_centroids(prof_post, x0)
+    _, amp_pre,  ph_pre,  rms_pre  = fit_sinusoid(ang_pre,  c_pre)
+    _, amp_post, ph_post, rms_post = fit_sinusoid(ang_post, c_post)
+    dphi_phase = (ph_post - ph_pre + 180.0) % 360.0 - 180.0
+    disagreement = (abs(((dphi_phase - dphi + 180.0) % 360.0) - 180.0)
+                    if step else None)
 
     return {
-        "delta_phi_deg": dphi,
-        "delta_phi_xcorr_deg": dphi_xc,
+        "delta_phi_deg": dphi,                   # applied; always a whole step
+        "delta_phi_phase_deg": dphi_phase,       # sub-step, informational
+        "centroid_disagreement_deg": disagreement,
+        # The applied correction is quantised to the projection step, so it can
+        # be out by at most half a step even when the match is perfect.
+        "correction_granularity_deg": step / 2.0 if step else None,
         "step_deg": step,
         "frame_shift": shift,
-        "residual_after_shift_deg": frac,
+        "match_separation_sigma": separation,
+        "residual_lateral_px": lateral_rms,
         "amplitude_pre_px": amp_pre, "amplitude_post_px": amp_post,
         "residual_pre_px": rms_pre,  "residual_post_px": rms_post,
         "n_pre": len(ang_pre), "n_post": len(ang_post),
-        "confident": not notes,
+        "confident": confident,
+        "rotation_known": rotation_known,
         "notes": notes,
     }
 
@@ -1927,13 +2032,14 @@ class ScanWorker(QObject):
                 self.finished.emit(False, "Scan aborted by user"); return
 
             # ── Check the dosimeter went back in the same orientation ────────
-            self._check_rotation_offset(pre_dir, post_dir)
+            angle_offset = self._check_rotation_offset(pre_dir, post_dir)
 
             # ── Subtraction in OD domain: ΔA = A_post − A_pre ───────────────
             self.log.emit("Computing ΔA = A_post − A_pre projections (OD domain)…")
             self.scan_progress.emit(0)
             self._compute_subtracted(pre_dir, post_dir, subtracted_dir, flat,
-                                     progress_cb=self.scan_progress.emit)
+                                     progress_cb=self.scan_progress.emit,
+                                     angle_offset_deg=angle_offset)
             self.log.emit(f"✓ ΔA projections saved to {subtracted_dir}")
 
             self.finished.emit(True, "Post-scan and subtraction complete")
@@ -2021,59 +2127,96 @@ class ScanWorker(QObject):
 
         return True
 
-    def _check_rotation_offset(self, pre_dir: Path, post_dir: Path):
+    def _check_rotation_offset(self, pre_dir: Path, post_dir: Path) -> float:
         """
-        Measure how far the dosimeter was rotated between the two sessions and
-        tell the operator in plain language if it matters.
+        Measure how far the dosimeter was rotated between the two sessions, and
+        return the angle the subtraction should compensate by.
 
         The subtraction assumes the dosimeter goes back in exactly the same
         orientation.  Nobody can see a 30° error by eye once the vial is in the
-        holder, and the consequence only shows up days later in a reconstruction
-        that nobody at the scanner will be looking at.  So the app measures it
-        and says so while the operator is still standing there.
+        holder, and the operator is the only person who will ever look at this
+        scan, so neither detecting it later nor handing it to an analyst is an
+        option.  The app measures it, corrects it, and says what it did.
 
-        Never fatal: the images are already saved, and a scan with a known
-        offset is far more useful than one where the offset is unknown.
+        Returns the correction in degrees, rounded to a whole projection step
+        (0.0 if none is needed or none can be trusted).  Never raises: a scan
+        that is merely uncorrected is far better than no scan at all.
         """
         self.log.emit("Checking the dosimeter went back the same way round…")
         try:
             r = estimate_rotation_offset(pre_dir, post_dir)
         except Exception as e:
             self.log.emit(f"⚠ Could not check dosimeter orientation: {e}")
-            return
+            return 0.0
 
-        dphi = r["delta_phi_deg"]
+        # delta_phi_deg is already a whole number of steps: pairing with a frame
+        # that was actually captured is exact, where interpolating between two
+        # frames would not be.
+        dphi = applied = r["delta_phi_deg"]
         (pre_dir.parent / "rotation_offset.json").write_text(json.dumps(r, indent=2))
+
         self.log.emit(f"Dosimeter orientation: {dphi:+.1f}° relative to the "
                       f"pre-irradiation scan "
                       f"({'reliable' if r['confident'] else 'UNRELIABLE'} measurement).")
         for note in r["notes"]:
             self.log.emit(f"  · {note}")
 
-        threshold = max(r["step_deg"] or 2.0, 2.0)
-        if not r["confident"]:
-            self.log.emit("⚠ Orientation check inconclusive — see the notes above.")
-            return
-        if abs(dphi) < threshold:
-            self.log.emit("✓ Dosimeter orientation matches the pre-irradiation scan.")
-            return
+        ADVICE = ("\n\nTo avoid this next time: use the marker dot on top of the "
+                  "dosimeter to line it up the same way round as it was for the "
+                  "pre-irradiation scan, before you start.")
 
-        self.log.emit(f"⚠ Dosimeter appears rotated by {abs(dphi):.0f}° — "
-                      f"the subtraction assumes 0°.")
-        self.alert.emit(
-            "Dosimeter orientation",
-            f"The dosimeter looks like it went back into the holder about "
-            f"{abs(dphi):.0f}° round from where it was during the "
-            f"pre-irradiation scan.\n\n"
-            f"All the images have been saved and nothing is lost, but the dose "
-            f"results from this scan will not be right until someone corrects "
-            f"for it. Please pass this on to whoever analyses the scan.\n\n"
-            f"Next time: use the marker dot on top of the dosimeter to line it up "
-            f"the same way round as it was for the pre-irradiation scan, before "
-            f"starting the scan.")
+        if not r["rotation_known"]:
+            self.log.emit("⚠ Orientation check inconclusive, subtracting without "
+                          "correction.")
+            self.alert.emit(
+                "Check the dosimeter position",
+                "The app could not work out whether the dosimeter went back into "
+                "the holder the same way round as it was for the "
+                "pre-irradiation scan.\n\n"
+                "The scan has been saved and processed as usual. If the "
+                "dosimeter was turned when you put it back, the dose results "
+                "for this scan may be wrong." + ADVICE)
+            return 0.0
+
+        if applied != 0.0:
+            self.log.emit(f"Correcting for a {dphi:+.0f}° dosimeter rotation: "
+                          f"pairing each pre-irradiation frame with the "
+                          f"post-irradiation frame {r['frame_shift']} positions "
+                          f"along.")
+
+        # Moved as well as turned: the rotation correction still helps, but
+        # re-pairing frames cannot undo a sideways shift, so say so plainly
+        # rather than reporting a clean success.
+        if not r["confident"]:
+            self.log.emit("⚠ Dosimeter also moved sideways; the rotation is "
+                          "corrected but the scan may still be affected.")
+            self.alert.emit(
+                "Dosimeter moved",
+                f"The dosimeter went back into the holder about {abs(dphi):.0f}° "
+                f"round from where it was for the pre-irradiation scan, and it "
+                f"is also sitting about "
+                f"{r['residual_lateral_px']:.0f} pixels to one side.\n\n"
+                f"The app has corrected the turn, but it cannot correct the "
+                f"sideways shift. The dose results for this scan may still be "
+                f"affected." + ADVICE)
+            return applied
+
+        if applied == 0.0:
+            self.log.emit("✓ Dosimeter orientation matches the pre-irradiation scan.")
+            return 0.0
+
+        if abs(dphi) >= ROTATION_ALERT_DEG:
+            self.alert.emit(
+                "Dosimeter was turned round",
+                f"The dosimeter went back into the holder about {abs(dphi):.0f}° "
+                f"round from where it was for the pre-irradiation scan.\n\n"
+                f"The app has lined the two scans back up automatically, so this "
+                f"scan is still good and you do not need to do anything." + ADVICE)
+        return applied
 
     def _compute_subtracted(self, pre_dir: Path, post_dir: Path, subtracted_dir: Path,
-                             flat: np.ndarray, progress_cb=None):
+                             flat: np.ndarray, progress_cb=None,
+                             angle_offset_deg: float = 0.0):
         """
         Compute ΔA = A_post − A_pre in the OD domain and save as uint16 PNG.
 
@@ -2082,6 +2225,11 @@ class ScanWorker(QObject):
         Frames are paired by the rotation angle in the filename, not by sort
         order, so a pre and post scan that used a different starting angle or
         step size cannot be silently mismatched.
+
+        angle_offset_deg compensates for a dosimeter that was reseated rotated
+        between the two sessions (see _check_rotation_offset).  It must be a
+        whole number of projection steps, so that every pair is two frames that
+        were actually captured rather than an interpolation between frames.
 
         Pixels where either frame falls below MIN_VALID_COUNTS are masked to
         ΔA = 0: down there the log ratio is quantisation noise, and a frame that
@@ -2099,24 +2247,32 @@ class ScanWorker(QObject):
         pre_by_angle  = self._index_by_angle(pre_dir)
         post_by_angle = self._index_by_angle(post_dir)
 
-        angles = sorted(set(pre_by_angle) & set(post_by_angle))
-        only_pre  = sorted(set(pre_by_angle)  - set(post_by_angle))
-        only_post = sorted(set(post_by_angle) - set(pre_by_angle))
-        if only_pre or only_post:
+        # A dosimeter reseated Δφ round shows, at motor angle θ in the post scan,
+        # what the pre scan saw at θ + Δφ.  So pre angle θ pairs with post angle
+        # θ − Δφ, and the resulting ΔA belongs to the sample's own frame at θ:
+        # the output keeps the *pre* angle, and the projection geometry is
+        # unchanged.
+        def _target(angle):
+            return int(round(angle - angle_offset_deg)) % 360
+
+        angles    = sorted(a for a in pre_by_angle if _target(a) in post_by_angle)
+        only_pre  = sorted(a for a in pre_by_angle if _target(a) not in post_by_angle)
+        unused    = sorted(set(post_by_angle) - {_target(a) for a in angles})
+        if only_pre or unused:
             self.log.emit(
                 f"⚠ pre/post angles do not match — {len(angles)} paired, "
                 f"{len(only_pre)} pre-only ({only_pre[:5]}…), "
-                f"{len(only_post)} post-only ({only_post[:5]}…). "
+                f"{len(unused)} post-only ({unused[:5]}…). "
                 f"Reconstruction will use the paired angles only.")
         if not angles:
             raise RuntimeError(
-                "No pre/post frames share a rotation angle — the two scans used "
+                "No pre/post frames could be paired — the two scans used "
                 "incompatible angle settings and cannot be subtracted.")
 
         n = len(angles)
         masked_total = 0
         for i, angle in enumerate(angles):
-            pf, qf = pre_by_angle[angle], post_by_angle[angle]
+            pf, qf = pre_by_angle[angle], post_by_angle[_target(angle)]
             pre_img  = imread_counts(pf)
             post_img = imread_counts(qf)
             if pre_img is None or post_img is None:
