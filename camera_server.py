@@ -9,6 +9,12 @@ import threading
 app = Flask(__name__)
 cam_lock = threading.Lock()
 
+# Frames are stacked in float32.  Rounding that to uint8 throws away the
+# sub-count precision the averaging bought (~1.5 extra bits for a stack of 8),
+# which matters where transmission is low and −log(I/I0) is steepest.  A 16-bit
+# response carries counts × COUNT_SUBDIV; oct_app.py divides it back out.
+COUNT_SUBDIV = 256.0
+
 # ---- Camera Setup ----
 picam2 = Picamera2()
 
@@ -95,17 +101,25 @@ def capture():
     """
     Query parameters:
         stack: number of frames to average (default=1)
+        depth: 8 or 16 bits per pixel (default=8)
+
+    depth defaults to 8 so that clients predating this option keep working.
     """
 
     stack = int(request.args.get("stack", 1))
+    depth = int(request.args.get("depth", 8))
 
     with cam_lock:
         img = capture_projection_timestamped(picam2, num_avg=stack)
-        img_u8 = np.clip(np.round(img), 0, 255).astype(np.uint8)
+
+    if depth == 16:
+        out = np.clip(np.round(img * COUNT_SUBDIV), 0, 65535).astype(np.uint16)
+    else:
+        out = np.clip(np.round(img), 0, 255).astype(np.uint8)
 
     success, png = cv2.imencode(
         ".png",
-        img_u8,
+        out,
         [cv2.IMWRITE_PNG_COMPRESSION, 1]
     )
 

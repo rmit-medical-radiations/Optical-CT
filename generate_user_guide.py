@@ -477,6 +477,10 @@ pdf.step(4, 'Click "CAPTURE POST SCAN" and follow the same four-phase sequence.'
          'Phase (3) is skipped.  Phase (4) captures the post-irradiation projections.  '
          'The lamp remains on after the scan completes.')
 pdf.step(5, 'On completion, ΔA = A_post − A_pre is computed for every projection.',
+         'Frames are paired by the rotation angle in the filename, so a pre and post '
+         'scan that used different angle settings cannot be silently mismatched — the '
+         'log reports any unpaired angles.  Pixels too dark to measure reliably '
+         '(below 10 counts in either frame) are masked and reported as a percentage.  '
          'Results are saved to scans/<name>/subtracted/ as 16-bit PNG files.')
 
 pdf.warning(
@@ -608,9 +612,9 @@ dirs = [
      'Raw intensity projection PNGs captured after irradiation.  '
      'Same naming convention as pre/.'),
     ('subtracted/',
-     'ΔA = A_post − A_pre projections encoded as 16-bit PNG '
-     '(value = ΔA × 65535/4, covering OD 0–4).  '
-     'Input to the FBP reconstruction.'),
+     'ΔA = A_post − A_pre projections encoded as 16-bit PNG in offset binary '
+     '(value = (ΔA + 1) × 65535/5, covering −1 to +4 OD, so negative ΔA is kept).  '
+     'encoding.json records the format.  Input to the FBP reconstruction.'),
     ('calibration/',
      'Dark and flat calibration frames (dark.npy, flat.npy) captured at scan time.  '
      'Bundled here so the correct calibration is always available alongside the '

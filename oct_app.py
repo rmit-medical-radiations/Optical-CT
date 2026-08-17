@@ -12,12 +12,13 @@ Phases:
   6. Reconstruction + dose profiling (inline FBP on ΔA projections)
 
 Absorbance conversion: A = −log(I / I₀) where I₀ is the flat-field image.
-ΔA projections are encoded as uint16 PNG (value = ΔA × OD_SCALE).
+ΔA projections are encoded as uint16 PNG in offset binary (see OD_SCALE_V2).
 
 Image directories under each scan folder:
   pre/         — raw intensity projections before irradiation
   post/        — raw intensity projections after irradiation
-  subtracted/  — ΔA = A_post − A_pre projections (uint16, OD_SCALE encoded)
+  subtracted/  — ΔA = A_post − A_pre projections (uint16, signed offset binary,
+                 paired by rotation angle; format recorded in encoding.json)
 
 Hardware is driven from QThread workers; the main thread only updates the UI.
 Camera preview uses the real Pi camera HTTP endpoint; falls back to simulator.
@@ -27,6 +28,7 @@ Requires: PyQt6, numpy, opencv-python, requests, pyserial, blinka/digitalio,
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -152,6 +154,8 @@ CALIBRATION_JSON   = Path(__file__).resolve().parent / "camera_calibration_charu
 
 MM_PER_PIXEL_XZ  = 43 / 454
 MM_PER_SLICE_Y   = 0.1
+# radius of the column averaged for depth dose and per-slice profiles
+DOSE_ROI_RADIUS_PX = 10
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -171,9 +175,28 @@ PHASE_IDLE  = "#252932"
 PHASE_ACTIVE= "#00d4aa"
 PHASE_DONE  = "#1a3d34"
 
-# Absorbance encoding: uint16 PNG value = ΔA * OD_SCALE
-# Covers OD range [0, 4] with ~0.00006 OD resolution.
-OD_SCALE = 65535.0 / 4.0
+# Absorbance encoding for subtracted/ PNGs.  Two formats exist:
+#   v1 (legacy): value = clip(ΔA, 0, 4) * OD_SCALE          — unsigned, clipped
+#   v2:          value = (ΔA + OD_OFFSET) * OD_SCALE_V2     — signed, offset binary
+# v2 keeps negative ΔA, which matters because clipping at zero rectifies noise
+# and gives zero-dose regions a positive DC offset after FBP.  A scan's format
+# is recorded in subtracted/encoding.json; scans without one are read as v1.
+OD_SCALE  = 65535.0 / 4.0
+OD_OFFSET = 1.0                       # OD represented by a stored value of 0
+OD_RANGE  = 5.0                       # encoded span: −1 .. +4 OD
+OD_SCALE_V2 = 65535.0 / OD_RANGE
+SUBTRACT_ENCODING_VERSION = 2
+ENCODING_JSON = "encoding.json"
+
+# The camera server stacks frames in float32.  Serving that as uint8 throws away
+# the sub-count precision the averaging bought (~1.5 extra bits for a stack of 8),
+# so frames are transported and stored as uint16 at 1/COUNT_SUBDIV count
+# resolution.  uint8 frames (older scans, older camera server) decode 1:1.
+COUNT_SUBDIV = 256.0
+
+# Below this many sensor counts the log ratio is dominated by quantisation:
+# at 3 counts a single count is a 33% change, i.e. ~0.3 OD per step.
+MIN_VALID_COUNTS = 10.0
 
 
 STYLESHEET = f"""
@@ -410,13 +433,76 @@ class CameraSimulator:
 
 
 def take_photo_http(stack: int = 3) -> Optional[np.ndarray]:
+    """
+    Capture a stacked frame from the camera server.
+
+    Asks for 16-bit; a server that predates that option ignores the parameter
+    and returns 8-bit, which decodes correctly either way.  Returns the array
+    as stored (uint16 at 1/COUNT_SUBDIV counts, or uint8 counts) — pass it
+    through counts_from_raw() before doing arithmetic on it.
+    """
     try:
-        resp = requests.get(f"{CAMERA_URL}/capture?stack={stack}", timeout=10)
+        resp = requests.get(f"{CAMERA_URL}/capture?stack={stack}&depth=16", timeout=10)
         resp.raise_for_status()
         arr = np.frombuffer(resp.content, dtype=np.uint8)
-        return cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+        # IMREAD_UNCHANGED, not IMREAD_GRAYSCALE: the latter silently
+        # down-converts 16-bit data to 8 bits.
+        return cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
     except Exception:
         return None
+
+
+# Projection filenames: img_<index>_<angle>_deg.png
+ANGLE_RE = re.compile(r"img_(?P<index>\d+)_(?P<angle>\d+)_deg\.png$")
+
+
+def write_subtracted_encoding(subtracted_dir) -> None:
+    """Record how the ΔA PNGs in this directory are encoded."""
+    meta = {"version": SUBTRACT_ENCODING_VERSION,
+            "od_scale": OD_SCALE_V2,
+            "od_offset": OD_OFFSET}
+    with open(Path(subtracted_dir) / ENCODING_JSON, "w") as fh:
+        json.dump(meta, fh, indent=2)
+
+
+def read_subtracted_encoding(subtracted_dir) -> dict:
+    """
+    Read the ΔA encoding for a scan.  Scans written before the sidecar existed
+    are v1: unsigned, clipped at zero, scaled by OD_SCALE.
+    """
+    try:
+        with open(Path(subtracted_dir) / ENCODING_JSON) as fh:
+            meta = json.load(fh)
+        return {"version": int(meta.get("version", 1)),
+                "od_scale": float(meta.get("od_scale", OD_SCALE)),
+                "od_offset": float(meta.get("od_offset", 0.0))}
+    except (OSError, ValueError, TypeError):
+        return {"version": 1, "od_scale": OD_SCALE, "od_offset": 0.0}
+
+
+def projection_angles(img_dir, n_expected: int, degree_increment: float) -> np.ndarray:
+    """
+    Rotation angle of each projection, read from the filenames.  Falls back to
+    index × degree_increment if the names do not parse or the count disagrees.
+    """
+    names = sorted(Path(img_dir).glob("*.png"))
+    angles = [int(m.group("angle")) for m in
+              (ANGLE_RE.match(f.name) for f in names) if m]
+    if len(angles) == n_expected:
+        return np.asarray(angles, dtype=np.float32)
+    return np.arange(n_expected, dtype=np.float32) * float(degree_increment)
+
+
+def counts_from_raw(img: np.ndarray) -> np.ndarray:
+    """Convert a captured or stored frame to sensor counts as float32."""
+    a = img.astype(np.float32)
+    return a / COUNT_SUBDIV if img.dtype == np.uint16 else a
+
+
+def imread_counts(path) -> Optional[np.ndarray]:
+    """Read a stored projection PNG and return sensor counts as float32."""
+    im = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    return None if im is None else counts_from_raw(im)
 
 
 def probe_camera() -> bool:
@@ -500,6 +586,7 @@ def get_or_create_calibration_scan(path: str, capture_fn, average_stack=5,
     if image is None:
         return None
 
+    image = counts_from_raw(image)      # store dark/flat in sensor counts
     np.save(path, image)
     png_img = image.astype(np.float32)
     lo, hi = np.percentile(png_img, (0.5, 99.5))
@@ -521,7 +608,9 @@ def load_png_stack(proj_dir, pattern="*.png"):
         raise FileNotFoundError("No PNG projections found")
     imgs = []
     for f in files:
-        im = cv2.imread(f, cv2.IMREAD_GRAYSCALE)
+        # IMREAD_UNCHANGED, not IMREAD_GRAYSCALE: the latter truncates the
+        # 16-bit ΔA encoding to 8 bits, costing a factor of 256 in resolution.
+        im = cv2.imread(f, cv2.IMREAD_UNCHANGED)
         if im is None:
             raise RuntimeError(f"Failed to read {f}")
         imgs.append(im.astype(np.float32))
@@ -570,7 +659,7 @@ def crop_window(imgs, dark, flat, cx, top, extent):
     return imgs[:, y0:y1, x0:x1], dark[y0:y1, x0:x1], flat[y0:y1, x0:x1]
 
 def dose_profile_from_volume(mu_vol, mm_per_pixel_xz, depth_y=None,
-                              roi_radius_px=10, lateral_axis="z"):
+                              roi_radius_px=DOSE_ROI_RADIUS_PX, lateral_axis="z"):
     Y, Z, X = mu_vol.shape
     y0 = Y // 2 if depth_y is None else int(depth_y)
     plane = mu_vol[y0]
@@ -588,7 +677,7 @@ def dose_profile_from_volume(mu_vol, mm_per_pixel_xz, depth_y=None,
     return pos_mm, rel, od
 
 def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
-                                  sample_height_px, roi_radius_px=10,
+                                  sample_height_px, roi_radius_px=DOSE_ROI_RADIUS_PX,
                                   edge_baseline_px=50, invert=False,
                                   peak_fraction=0.20):
     """
@@ -695,9 +784,9 @@ def find_axis_from_projections(img_dir: Path) -> Optional[float]:
         return None
     stack = []
     for f in files:
-        img = cv2.imread(str(f), cv2.IMREAD_GRAYSCALE)
+        img = imread_counts(f)
         if img is not None:
-            stack.append(img.astype(np.float32))
+            stack.append(img)
     if not stack:
         return None
     mean_img = np.mean(stack, axis=0)
@@ -716,6 +805,8 @@ def ema(values, alpha=0.1):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def np_gray_to_qimage(gray: np.ndarray) -> QImage:
+    if gray.dtype == np.uint16:
+        gray = counts_from_raw(gray)          # 16-bit frames carry sub-count precision
     if gray.dtype != np.uint8:
         gray = np.clip(gray, 0, 255).astype(np.uint8)
     h, w = gray.shape
@@ -1784,29 +1875,79 @@ class ScanWorker(QObject):
         Compute ΔA = A_post − A_pre in the OD domain and save as uint16 PNG.
 
         A = −log(I / I₀) where I₀ is the flat-field image.
-        ΔA is clipped to [0, ∞) and encoded with OD_SCALE.
+
+        Frames are paired by the rotation angle in the filename, not by sort
+        order, so a pre and post scan that used a different starting angle or
+        step size cannot be silently mismatched.
+
+        Pixels where either frame falls below MIN_VALID_COUNTS are masked to
+        ΔA = 0: down there the log ratio is quantisation noise, and a frame that
+        reads zero would otherwise be clamped to 1e-6 and produce a ~14 OD
+        spike.  This is what made the vial wall the brightest thing in the
+        reconstruction.
+
+        ΔA is kept signed (see OD_SCALE_V2) — clipping it at zero rectifies
+        noise and biases zero-dose regions positive.
 
         Note: the flat field cancels in the subtraction (ΔA = log(I_pre/I_post)),
         so the result is independent of flat-field drift between sessions.
         """
-        flat_f    = np.clip(flat.astype(np.float32), 1e-6, None)
-        pre_files = sorted(pre_dir.glob("*.png"))
-        post_files = sorted(post_dir.glob("*.png"))
-        if len(pre_files) != len(post_files):
-            self.log.emit(f"⚠ pre/post image count mismatch "
-                          f"({len(pre_files)} vs {len(post_files)}) — "
-                          f"using first {min(len(pre_files), len(post_files))} pairs")
-        n = min(len(pre_files), len(post_files))
-        for i, (pf, qf) in enumerate(zip(pre_files[:n], post_files[:n])):
-            pre_img  = cv2.imread(str(pf),  cv2.IMREAD_GRAYSCALE).astype(np.float32)
-            post_img = cv2.imread(str(qf), cv2.IMREAD_GRAYSCALE).astype(np.float32)
-            A_pre  = -np.log(np.clip(pre_img,  1e-6, None) / flat_f)
-            A_post = -np.log(np.clip(post_img, 1e-6, None) / flat_f)
-            delta_A = np.clip(A_post - A_pre, 0.0, None)
-            out = np.clip(delta_A * OD_SCALE, 0, 65535).astype(np.uint16)
-            cv2.imwrite(str(subtracted_dir / pf.name), out)
-            if progress_cb and n:
+        flat_f = np.clip(flat.astype(np.float32), 1e-6, None)
+        pre_by_angle  = self._index_by_angle(pre_dir)
+        post_by_angle = self._index_by_angle(post_dir)
+
+        angles = sorted(set(pre_by_angle) & set(post_by_angle))
+        only_pre  = sorted(set(pre_by_angle)  - set(post_by_angle))
+        only_post = sorted(set(post_by_angle) - set(pre_by_angle))
+        if only_pre or only_post:
+            self.log.emit(
+                f"⚠ pre/post angles do not match — {len(angles)} paired, "
+                f"{len(only_pre)} pre-only ({only_pre[:5]}…), "
+                f"{len(only_post)} post-only ({only_post[:5]}…). "
+                f"Reconstruction will use the paired angles only.")
+        if not angles:
+            raise RuntimeError(
+                "No pre/post frames share a rotation angle — the two scans used "
+                "incompatible angle settings and cannot be subtracted.")
+
+        n = len(angles)
+        masked_total = 0
+        for i, angle in enumerate(angles):
+            pf, qf = pre_by_angle[angle], post_by_angle[angle]
+            pre_img  = imread_counts(pf)
+            post_img = imread_counts(qf)
+            if pre_img is None or post_img is None:
+                raise RuntimeError(f"Failed to read {pf if pre_img is None else qf}")
+
+            valid = (pre_img >= MIN_VALID_COUNTS) & (post_img >= MIN_VALID_COUNTS)
+            masked_total += int(valid.size - valid.sum())
+
+            A_pre  = -np.log(np.clip(pre_img,  MIN_VALID_COUNTS, None) / flat_f)
+            A_post = -np.log(np.clip(post_img, MIN_VALID_COUNTS, None) / flat_f)
+            delta_A = np.where(valid, A_post - A_pre, 0.0)
+
+            out = np.clip((delta_A + OD_OFFSET) * OD_SCALE_V2,
+                          0, 65535).astype(np.uint16)
+            cv2.imwrite(str(subtracted_dir / f"img_{i:04d}_{angle:03d}_deg.png"), out)
+            if progress_cb:
                 progress_cb(int((i + 1) / n * 100))
+
+        pct = 100.0 * masked_total / max(1, n * flat_f.size)
+        self.log.emit(f"Subtraction: {n} angle pairs, {pct:.2f}% of pixels masked "
+                      f"as below {MIN_VALID_COUNTS:g} counts.")
+        if pct > 5.0:
+            self.log.emit("⚠ Large masked fraction — check lamp brightness and exposure.")
+        write_subtracted_encoding(subtracted_dir)
+
+    @staticmethod
+    def _index_by_angle(img_dir: Path) -> dict:
+        """Map rotation angle (degrees) → file path for a projection directory."""
+        out = {}
+        for f in sorted(img_dir.glob("*.png")):
+            m = ANGLE_RE.match(f.name)
+            if m:
+                out[int(m.group("angle"))] = f
+        return out
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1866,8 +2007,15 @@ class ReconWorker(QObject):
             # Images are pre-computed ΔA projections encoded as uint16 — decode directly.
             # (line_integrals is not applied; the subtraction pipeline already produced
             #  ΔA = A_post − A_pre = −log(I_post/I₀) − (−log(I_pre/I₀)))
-            P = imgs / OD_SCALE
-            angles_deg = np.arange(P.shape[0], dtype=np.float32) * float(degree_increment)
+            enc = read_subtracted_encoding(image_dir)
+            if enc["version"] < SUBTRACT_ENCODING_VERSION:
+                self.log.emit(f"ΔA encoding v{enc['version']} (legacy, unsigned). "
+                              f"Re-run the subtraction to get signed ΔA.")
+            P = imgs / enc["od_scale"] - enc["od_offset"]
+
+            # Take angles from the filenames; they are authoritative now that
+            # subtraction pairs pre/post by angle and may skip unpaired ones.
+            angles_deg = projection_angles(image_dir, P.shape[0], degree_increment)
             self.progress.emit(20)
 
             vol_path = str(Path(reconstruct_dir) / "attenuation_volume.npy")
@@ -1898,7 +2046,7 @@ class ReconWorker(QObject):
                     mm_per_slice_y=MM_PER_SLICE_Y,
                     sample_top_px=sample_top,
                     sample_height_px=sample_height,
-                    roi_radius_px=10,
+                    roi_radius_px=DOSE_ROI_RADIUS_PX,
                     invert=False,
                 )
             _zc, _xc = dose_centroid
@@ -2008,8 +2156,8 @@ class ReconWorker(QObject):
                 # draw dose ROI circle at detected centroid; cross-hair at geometric axis
                 _sc_zc, _sc_xc = dose_centroid
                 _th = np.linspace(0, 2 * np.pi, 120)
-                ax.plot(_sc_xc + 10 * np.cos(_th),
-                        _sc_zc + 10 * np.sin(_th),
+                ax.plot(_sc_xc + DOSE_ROI_RADIUS_PX * np.cos(_th),
+                        _sc_zc + DOSE_ROI_RADIUS_PX * np.sin(_th),
                         color=_ACC, linewidth=1, alpha=0.9)
                 ax.plot(_X // 2, _Z // 2, '+', color="white",
                         markersize=6, markeredgewidth=0.8, alpha=0.6)
@@ -2019,7 +2167,7 @@ class ReconWorker(QObject):
                 ax = axs[1, 0]
                 sagittal = mu_vol[:, :, _sc_xc]    # Y × Z at centroid X
                 _lo, _hi = _pct_lim(sagittal)
-                _z_origin = _sc_zc * MM_PER_PIXEL_XZ   # mm from left edge to centroid
+                # lateral axis origin is the dose centroid, not the geometric axis
                 _ext = [
                     -_sc_zc * MM_PER_PIXEL_XZ,
                     (_Z - _sc_zc) * MM_PER_PIXEL_XZ,
@@ -2033,14 +2181,16 @@ class ReconWorker(QObject):
                 # mark sample ROI
                 _s0_mm = sample_top * MM_PER_SLICE_Y
                 _s1_mm = (sample_top + sample_height) * MM_PER_SLICE_Y
-                _roi_mm = 10 * MM_PER_PIXEL_XZ
-                _cen_z_mm = (_sc_zc - _Z // 2) * MM_PER_PIXEL_XZ  # centroid offset in mm
+                _roi_mm = DOSE_ROI_RADIUS_PX * MM_PER_PIXEL_XZ
+                # the axis origin is already the centroid, so the ROI sits at 0;
+                # the geometric axis is one centroid-offset to the other side
+                _axis_mm = -(_sc_zc - _Z // 2) * MM_PER_PIXEL_XZ
                 ax.axhspan(_s0_mm, _s1_mm, color=_ACC, alpha=0.25)
                 ax.axhline(_s0_mm, color=_ACC, linewidth=1.2, linestyle="--", alpha=0.9)
                 ax.axhline(_s1_mm, color=_ACC, linewidth=1.2, linestyle="--", alpha=0.9)
-                ax.axvspan(_cen_z_mm - _roi_mm, _cen_z_mm + _roi_mm, color=_ACC, alpha=0.15)
-                ax.axvline(_cen_z_mm, color=_ACC, linewidth=0.8, linestyle="-", alpha=0.6)
-                ax.axvline(0, color="white", linewidth=0.5, linestyle=":", alpha=0.5)
+                ax.axvspan(-_roi_mm, _roi_mm, color=_ACC, alpha=0.15)
+                ax.axvline(0, color=_ACC, linewidth=0.8, linestyle="-", alpha=0.6)
+                ax.axvline(_axis_mm, color="white", linewidth=0.5, linestyle=":", alpha=0.5)
                 # mark the depth that feeds the sinogram panel
                 _sino_mm = _sino_row * MM_PER_SLICE_Y
                 ax.axhline(_sino_mm, color="white", linewidth=0.8, linestyle=":", alpha=0.7)
@@ -2075,7 +2225,7 @@ class ReconWorker(QObject):
                 if self._abort:
                     break
                 pos_mm, rel, od = dose_profile_from_volume(
-                    mu_vol, MM_PER_PIXEL_XZ, depth_y=y, roi_radius_px=10)
+                    mu_vol, MM_PER_PIXEL_XZ, depth_y=y, roi_radius_px=DOSE_ROI_RADIUS_PX)
                 depth_key = f"{y * MM_PER_SLICE_Y:.2f}mm"
                 if profile_pos_mm is None:
                     profile_pos_mm = pos_mm

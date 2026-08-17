@@ -117,7 +117,7 @@ scans/
 └── scan_20260506_143450/
     ├── pre/                  # Raw intensity projections (pre-irradiation)
     ├── post/                 # Raw intensity projections (post-irradiation)
-    ├── subtracted/           # ΔA = A_post − A_pre projections (uint16 PNG)
+    ├── subtracted/           # ΔA = A_post − A_pre projections (uint16 PNG) + encoding.json
     ├── calibration/          # Dark and flat frames captured at scan time
     ├── reconstruct/          # FBP volume, crop preview, sanity-check figure
     ├── depth-dose/           # Depth dose plot, Excel table, recon config (includes dose centroid offset)
@@ -135,7 +135,13 @@ Optical density change between pre- and post-irradiation scans:
 ΔA = A_post − A_pre = log(I_pre / I_post)
 ```
 
-The flat-field term cancels exactly, making the measurement independent of lamp intensity drift between sessions.  ΔA projections are encoded as 16-bit PNG with `OD_SCALE = 65535 / 4` (range 0–4 OD).
+The flat-field term cancels exactly, making the measurement independent of lamp intensity drift between sessions.
+
+Pre and post frames are paired by the rotation angle in the filename, not by sort order, so two scans that used a different starting angle or step size cannot be silently mismatched.  Pixels where either frame reads below `MIN_VALID_COUNTS` (10 counts) are masked to ΔA = 0: down there the log ratio is quantisation noise, and a frame reading zero would otherwise produce a spurious ~14 OD spike at the vial wall.
+
+ΔA projections are encoded as 16-bit PNG in offset binary, `value = (ΔA + 1) × 65535 / 5`, covering −1 to +4 OD.  Negative ΔA is kept rather than clipped, because clipping at zero rectifies noise and gives zero-dose regions a positive DC offset after FBP.  The encoding is recorded in `subtracted/encoding.json`; scans without that file are read with the older unsigned `OD_SCALE = 65535 / 4` scheme.
+
+Camera frames are transported and stored as 16-bit (`counts × 256`), preserving the sub-count precision that frame stacking buys.  The camera server still serves 8-bit unless asked for `?depth=16`.
 
 Reconstruction uses `skimage.transform.iradon` with a Hann filter.  The volume has dimensions `(depth_slices, extent_px, extent_px)` with calibrated scales:
 
