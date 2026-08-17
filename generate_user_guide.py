@@ -352,8 +352,11 @@ params = [
     ('Settle (ms)',         '300',   'Time the motor pauses after each step before '
                                      'the camera captures, allowing vibration to damp out.'),
     ('Crop centre X (px)',  '995',   'Horizontal pixel position of the axis of rotation.  '
+                                     'Read-only: the app measures it from the scan, and '
                                      'Auto-detect (button in Reconstruction panel) '
-                                     'estimates this from the pre-scan projections.'),
+                                     're-estimates it from the pre-scan projections.  '
+                                     'Tick "Set manually" to override, only if '
+                                     'auto-detection has failed.'),
     ('Crop top Y (px)',     '270',   'Top edge of the region of interest in the image.  '
                                      'Should be just above the dosimeter top.'),
     ('Crop extent (px)',    '700',   'Side length of the square crop window.  '
@@ -369,8 +372,16 @@ for p in params:
 
 pdf.warning(
     'Crop centre X must be accurate.  An off-centre axis produces blurred ring '
-    'artefacts in the reconstruction.  Always run Auto-detect after a pre-scan and '
-    'verify the axis line overlies the rotation axis in the preview.'
+    'artefacts in the reconstruction, without otherwise looking wrong.  That is why '
+    'the box is read-only: run Auto-detect after a pre-scan and verify the axis line '
+    'overlies the rotation axis in the preview, rather than typing a value.'
+)
+
+pdf.note(
+    'Selecting a scan restores the settings it was last reconstructed with, so '
+    'repeating a reconstruction repeats it exactly.  If anything has since been '
+    'changed, the status panel says so before reconstructing, and a change of axis '
+    'asks for confirmation first.'
 )
 
 # ── Page 3: Pre-irradiation scan ─────────────────────────────────────────────

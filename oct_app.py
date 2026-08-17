@@ -59,7 +59,7 @@ from PyQt6.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsItem, QGraphicsLineItem,
     QDialog, QListWidget, QListWidgetItem, QComboBox, QMessageBox, QFormLayout,
     QLineEdit, QCheckBox, QRadioButton, QTabWidget, QDoubleSpinBox, QSplitter, QFrame,
-    QScrollArea, QTextEdit, QStackedWidget
+    QScrollArea, QTextEdit, QStackedWidget, QAbstractSpinBox
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -154,6 +154,15 @@ CALIBRATION_JSON   = Path(__file__).resolve().parent / "camera_calibration_charu
 
 MM_PER_PIXEL_XZ  = 43 / 454
 MM_PER_SLICE_Y   = 0.1
+# Output subdirectory names.  These were spelled two ways (depth-dose when
+# written, depth_dose when read), which silently broke every reader: the saved
+# crop was never restored, the dose spreadsheet was never found, and the "view
+# dose" action never enabled.  Naming them once removes the chance of drift.
+DEPTH_DOSE_DIRNAME   = "depth-dose"
+DOSE_PROFILES_DIRNAME = "dose-profiles"
+RECON_DIRNAME        = "reconstruct"
+RECON_CONFIG_JSON    = "recon_config.json"
+
 # radius of the column averaged for depth dose and per-slice profiles
 DOSE_ROI_RADIUS_PX = 10
 
@@ -2764,7 +2773,7 @@ class ReconWorker(QObject):
                 "dose_centroid_z_mm":  round(_offset_z, 3),
                 "dose_centroid_x_mm":  round(_offset_x, 3),
             }
-            (Path(depth_dose_dir) / "recon_config.json").write_text(
+            (Path(depth_dose_dir) / RECON_CONFIG_JSON).write_text(
                 json.dumps(recon_cfg, indent=2))
 
             self.progress.emit(100)
@@ -2991,7 +3000,7 @@ class StartupDialog(QDialog):
     _SCAN_FILTER = {
         "post":        lambda p: (p / "pre").is_dir() and bool(list((p / "pre").glob("*.png"))),
         "reconstruct": lambda p: (p / "subtracted").is_dir(),
-        "view_dose":   lambda p: (p / "depth_dose" / "depth_dose.xlsx").exists(),
+        "view_dose":   lambda p: (p / DEPTH_DOSE_DIRNAME / "depth_dose.xlsx").exists(),
         "export":      lambda p: True,
     }
 
@@ -3412,11 +3421,32 @@ class MainWindow(QMainWindow):
         self.scan_selector = QComboBox()
         rg.addWidget(self.scan_selector, 0, 1, 1, 2)
 
+        # Axis of rotation.  This is a measurement, not a preference: typing the
+        # wrong value silently reconstructs about the wrong centre.  The app
+        # detects it, so the box is read-only unless deliberately unlocked.
         rg.addWidget(QLabel("Crop centre X:"), 1, 0)
         self.crop_cx_spin = QSpinBox()
         self.crop_cx_spin.setRange(1, 9999); self.crop_cx_spin.setValue(_d["crop_cx"])
         self.crop_cx_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        rg.addWidget(self.crop_cx_spin, 1, 1)
+        self.crop_cx_spin.setReadOnly(True)
+        self.crop_cx_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.crop_cx_spin.setToolTip(
+            "Axis of rotation, detected from the scan.\n"
+            "Tick 'Set manually' only if detection fails.")
+        self.manual_axis_cb = QCheckBox("Set manually")
+        self.manual_axis_cb.setToolTip(
+            "Normally the axis of rotation is detected automatically.\n"
+            "Only override it if auto-detection has failed.")
+        self.manual_axis_cb.toggled.connect(self._on_manual_axis_toggled)
+
+        _axis_row = QWidget()
+        _axis_layout = QHBoxLayout(_axis_row)
+        _axis_layout.setContentsMargins(0, 0, 0, 0)
+        _axis_layout.setSpacing(6)
+        _axis_layout.addWidget(self.crop_cx_spin, 1)
+        _axis_layout.addWidget(self.manual_axis_cb)
+        rg.addWidget(_axis_row, 1, 1)
+
         self.auto_axis_btn = QPushButton("Auto-detect")
         self.auto_axis_btn.setToolTip("Detect axis of rotation from nozzle edges in current frame")
         rg.addWidget(self.auto_axis_btn, 1, 2)
@@ -3905,13 +3935,73 @@ class MainWindow(QMainWindow):
         self.scan_selector.blockSignals(False)
         self._on_scan_selected()
 
+    def _on_manual_axis_toggled(self, manual: bool):
+        """Unlock the axis box only when the operator explicitly asks to."""
+        self.crop_cx_spin.setReadOnly(not manual)
+        self.crop_cx_spin.setButtonSymbols(
+            QAbstractSpinBox.ButtonSymbols.UpDownArrows if manual
+            else QAbstractSpinBox.ButtonSymbols.NoButtons)
+        if manual:
+            self._log("⚠ Axis of rotation unlocked for manual entry. The detected "
+                      "value is usually right; only override it if auto-detection "
+                      "has failed.")
+
+    def _warn_if_settings_changed(self, scan_dir: Path):
+        """
+        Say so if this scan is about to be reconstructed differently from last time.
+
+        Settings are restored from the scan's own recon_config.json when it is
+        selected, so a difference here means they were changed afterwards.  That
+        is allowed, but it should never happen silently: two reconstructions of
+        one scan that disagree are otherwise impossible to tell apart later.
+        """
+        cfg_path = scan_dir / DEPTH_DOSE_DIRNAME / RECON_CONFIG_JSON
+        if not cfg_path.exists():
+            return
+        try:
+            was = json.loads(cfg_path.read_text())
+        except (OSError, ValueError):
+            return
+
+        now = {
+            "crop_cx":       self.crop_cx_spin.value(),
+            "crop_top":      self.crop_top_spin.value(),
+            "crop_extent":   self.crop_extent_spin.value(),
+            "sample_top":    self.sample_top_spin.value(),
+            "sample_height": self.sample_h_spin.value(),
+            "degree_increment": self.step_spin.value(),
+        }
+        changed = [(k, was[k], v) for k, v in now.items()
+                   if k in was and was[k] != v]
+        if not changed:
+            return
+
+        self._log(f"⚠ This scan was last reconstructed with different settings: "
+                  + ", ".join(f"{k} {old} → {new}" for k, old, new in changed))
+        if any(k == "crop_cx" for k, _, _ in changed):
+            # The axis is the one that quietly ruins a reconstruction rather
+            # than obviously changing what is shown, so confirm that one.
+            old = next(o for k, o, _ in changed if k == "crop_cx")
+            if QMessageBox.question(
+                    self, "Axis of rotation changed",
+                    f"This scan was reconstructed before using axis "
+                    f"x={old}, and it is now set to "
+                    f"x={self.crop_cx_spin.value()}.\n\n"
+                    f"Reconstructing about the wrong axis blurs the result "
+                    f"without making it obviously wrong.\n\n"
+                    f"Carry on with x={self.crop_cx_spin.value()}?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                self.crop_cx_spin.setValue(old)
+                self._log(f"Axis restored to x={old}.")
+
     def _on_scan_selected(self):
         path = self.scan_selector.currentData()
         self.recon_btn.setEnabled(
             path is not None and self._mode == "idle")
         if path is None:
             return
-        cfg_path = path / "depth_dose" / "recon_config.json"
+        cfg_path = path / DEPTH_DOSE_DIRNAME / RECON_CONFIG_JSON
         if not cfg_path.exists():
             return
         try:
@@ -3952,9 +4042,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Insufficient projections", msg)
             return
 
-        recon_dir      = str(scan_dir / "reconstruct")
-        dose_dir       = str(scan_dir / "dose-profiles")
-        depth_dose_dir = str(scan_dir / "depth-dose")
+        self._warn_if_settings_changed(scan_dir)
+
+        recon_dir      = str(scan_dir / RECON_DIRNAME)
+        dose_dir       = str(scan_dir / DOSE_PROFILES_DIRNAME)
+        depth_dose_dir = str(scan_dir / DEPTH_DOSE_DIRNAME)
 
         cfg = dict(
             scan_name      = scan_dir.name,
@@ -4023,7 +4115,7 @@ class MainWindow(QMainWindow):
             self.recon_btn.setFocus()
         elif mode == "view_dose":
             if scan is not None:
-                dose_path = scan / "depth_dose" / "depth_dose.xlsx"
+                dose_path = scan / DEPTH_DOSE_DIRNAME / "depth_dose.xlsx"
                 if dose_path.exists():
                     self._load_depth_dose_path(dose_path)
                     return

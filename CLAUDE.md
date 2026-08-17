@@ -68,6 +68,43 @@ What remains uncorrected:
 
 ## Decisions
 
+### 2026-08-18: axis of rotation is measured, not typed
+
+Prompted by asking whether the operator should be able to set the crop at all,
+since she set a different one between sessions.
+
+**The crop cannot corrupt the subtraction.** It is a reconstruction-time
+parameter: `pre/` and `post/` hold full frames, `crop_window` is applied to the
+already-subtracted stack, and the scan worker's config contains no crop fields
+at all. Two sessions cannot disagree about it because neither uses it. Set it
+correctly and re-reconstruct; nothing is lost. Worth remembering before
+redesigning anything around a crop-mismatch theory.
+
+**But the per-scan crop restore had never worked.** The output directory is
+written as `depth-dose` and was read in three places as `depth_dose`. So
+selecting a scan silently left whatever was in the spinboxes, and re-running a
+reconstruction could quietly use a different crop than the first run. The same
+typo also meant the dose spreadsheet was never found and the "view dose" action
+never enabled. Directory names are now module constants so they cannot drift
+apart again.
+
+**`crop_cx` is read-only by default.** It is the axis of rotation, which is a
+measurement rather than a preference, and the app already detects it. Typing
+the wrong value blurs a reconstruction without making it visibly wrong, which
+is the worst kind of error to leave available. A "Set manually" tick unlocks it
+for when detection fails, which the code already anticipates and logs.
+
+The other three parameters stay editable, deliberately. `crop_top` and
+`crop_extent` are set by dragging the green square and only need to bracket the
+vial. `sample_top` and `sample_height` are a genuine experimental choice the app
+cannot infer.
+
+**Changed settings are reported at reconstruct time.** Since settings are now
+restored from the scan's own `recon_config.json`, any difference means they were
+changed afterwards. That is allowed but never silent: it is logged, and a change
+of axis specifically asks for confirmation, defaulting to no and reverting to
+the recorded value if declined.
+
 ### 2026-08-18: the dose centroid was finding artefacts, not the beam
 
 The operator reports the beam is under 1 cm across (the standing assumption has
