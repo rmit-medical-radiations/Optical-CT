@@ -188,10 +188,10 @@ DOSE_CENTROID_DIAMETER_MARGIN = 1.25
 DOSE_CENTROID_MAX_ELONGATION = 1.5
 
 # Fraction of the sample region excluded at each end when looking for the
-# brightest slices.  The meniscus and the base of the vial throw strong
-# reconstruction artefacts, and without a guard they simply win: on a real scan
-# the first slice was 1139% above the column median and the "dose" centroid
-# landed on it.
+# brightest slices.  The end faces of the dosimeter throw strong reconstruction
+# artefacts, for the same reason its sides do, and without a guard they simply
+# win: on a real scan the first slice was 1139% above the column median and the
+# "dose" centroid landed on it.
 DOSE_EDGE_GUARD_FRAC = 0.08
 
 # Percentile of the depth profile taken as the undosed baseline.  Averaging the
@@ -199,19 +199,24 @@ DOSE_EDGE_GUARD_FRAC = 0.08
 # lifted it so far that 77.5% of a real depth dose clipped to exactly zero.
 DOSE_BASELINE_PERCENTILE = 10.0
 
-# ΔA is zero by construction outside the dosimeter and inside the glass, so
-# those columns are masked out of each projection before reconstruction.  inset
-# is how far inside the detected wall the gel is taken to start, taper softens
-# the boundary so the retained signal is not cut at a hard edge.
-WALL_MASK_INSET_PX = 12
-WALL_MASK_TAPER_PX = 6
-MASK_WALLS = True
+# The dosimeter is a solid urethane cylinder dyed throughout, so unlike a
+# liquid in a container there is no inert wall: material right up to the edge
+# can darken.  What sits at the edge instead is an optical artefact, from
+# refraction at the urethane surface where rays graze it almost tangentially,
+# and that carries no usable dose information.  Masking it is therefore a
+# deliberate trade, not a known-true zero: inset is how far inside the detected
+# edge the usable material is taken to start, and it does discard a thin
+# annulus of real dosimeter.  Acceptable while the beam is small and near the
+# axis; revisit if dose is ever expected near the surface.
+EDGE_MASK_INSET_PX = 12
+EDGE_MASK_TAPER_PX = 6
+MASK_EDGES = True
 # A wall must be at least this much darker than the backlit field to count as
 # found, which is only meant to reject a frame with no dosimeter in it.
 # Measured wall contrast on a real scan ran 0.57 to 0.75 of the field, so a
 # tighter cutoff rejects real walls: 0.75 threw out 15 of 180 pre frames whose
 # wall columns were perfectly sensible.
-WALL_MIN_CONTRAST = 0.90
+EDGE_MIN_CONTRAST = 0.90
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -624,15 +629,16 @@ def scan_display_label(scan_dir) -> str:
     return f"{scan_dir.name}  ({', '.join(parts)})" if parts else scan_dir.name
 
 
-def find_vial_walls(counts, row_lo=0.30, row_hi=0.70, margin=0.15):
+def find_dosimeter_edges(counts, row_lo=0.30, row_hi=0.70, margin=0.15):
     """
-    Columns of the two vial walls in one projection.
+    Columns of the dosimeter's two edges in one projection.
 
-    The walls are the darkest sustained features in the frame, one either side
-    of the axis.  The outer `margin` of columns is excluded because the dark
-    frame borders are darker still.
+    The edges are the darkest sustained features in the frame, one either side
+    of the axis: rays graze the urethane surface almost tangentially there and
+    are refracted away.  The outer `margin` of columns is excluded because the
+    dark frame borders are darker still.
 
-    Returns (left, right) columns, or None if either side has no clear wall.
+    Returns (left, right) columns, or None if either side has no clear edge.
     """
     a = np.asarray(counts, dtype=np.float32)
     h, w = a.shape
@@ -646,29 +652,30 @@ def find_vial_walls(counts, row_lo=0.30, row_hi=0.70, margin=0.15):
     # A wall has to actually be dark relative to the backlit field, or we have
     # locked onto noise in an empty frame.
     backlit = float(np.median(prof[lo:hi]))
-    if backlit <= 0 or min(prof[left], prof[right]) > WALL_MIN_CONTRAST * backlit:
+    if backlit <= 0 or min(prof[left], prof[right]) > EDGE_MIN_CONTRAST * backlit:
         return None
     return left, right
 
 
-def gel_support_mask(width, walls_pre, walls_post,
-                     inset_px=WALL_MASK_INSET_PX, taper_px=WALL_MASK_TAPER_PX):
+def dosimeter_support_mask(width, edges_pre, edges_post,
+                     inset_px=EDGE_MASK_INSET_PX, taper_px=EDGE_MASK_TAPER_PX):
     """
-    Per-column weight keeping only rays that pass through gel.
+    Per-column weight keeping only rays that pass usefully through the dosimeter.
 
-    ΔA is zero by construction outside the dosimeter (those rays miss it) and in
-    the glass itself (glass does not darken), so the only place it can be
-    non-zero is the gel between the walls.  Anything measured elsewhere is
-    misregistration residual, and the vial wall is the sharpest, highest
-    contrast edge in the frame, so that residual dominates the reconstruction.
-    Setting those columns to their known-true value of zero removes it without
-    inventing anything: this is a support constraint, not cosmetic smoothing.
+    Outside the dosimeter ΔA is zero by construction, since those rays miss it
+    entirely, so zeroing there is exact.  At the edge it is not: the dosimeter
+    is solid urethane dyed throughout and material near the surface can darken
+    like any other.  What dominates there is an optical artefact, rays grazing
+    the curved surface and being refracted away, which carries no usable dose
+    information and is the sharpest, highest-contrast feature in the frame.
+    Discarding a thin annulus of real material to be rid of it is a trade worth
+    making while the beam is small and near the axis.
 
-    The kept region spans both scans' walls, since they need not agree, and is
-    tapered so the retained gel signal is not cut off at a hard edge.
+    The kept region spans both scans' edges, since they need not agree, and is
+    tapered so the retained signal is not cut off at a hard edge.
     """
     keep = np.zeros(int(width), dtype=np.float32)
-    bounds = [w for w in (walls_pre, walls_post) if w is not None]
+    bounds = [w for w in (edges_pre, edges_post) if w is not None]
     if not bounds:
         return None
     left = max(w[0] for w in bounds) + inset_px
@@ -689,7 +696,7 @@ def projection_profiles(img_dir, row_lo=0.30, row_hi=0.70, margin=0.15):
 
     row_lo/row_hi select a band of rows as a fraction of image height, keeping
     the measurement inside the sample and away from the nozzle holder and the
-    meniscus.  margin excludes that fraction of columns each side, because the
+    dosimeter's end faces.  margin excludes that fraction of columns each side, because the
     dark frame borders otherwise dominate any moment of the profile (the same
     trap that made a naive centroid useless for axis detection).
 
@@ -845,8 +852,8 @@ def estimate_rotation_offset(pre_dir, post_dir, row_lo=0.30, row_hi=0.70,
     The dosimeter is removed, irradiated, and reseated between sessions, so it
     can come back rotated about the vertical axis.  Nothing in the acquisition
     records this, and ΔA = A_post − A_pre assumes it is zero; when it is not,
-    static structure (above all the vial wall) fails to cancel and leaves a
-    bipolar residual that dominates the reconstruction.
+    static structure (above all the dosimeter's edge) fails to cancel and leaves
+    a bipolar residual that dominates the reconstruction.
 
     At motor angle θ a sample reseated by Δφ shows what the pre scan saw at
     θ + Δφ.  Two independent measurements of Δφ are made:
@@ -1132,7 +1139,7 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     Two things have to be got right because the beam is small: under 2% of the
     slice at 10 mm across on a 66 mm grid.
 
-    The wall is excluded first (see gel_interior_mask).  Then the threshold is
+    The wall is excluded first (see dosimeter_interior_mask).  Then the threshold is
     taken at half of the peak above the local background, which is the usual
     FWHM convention and, being a contrast ratio rather than an area, needs no
     assumption about how big the beam is.  This function once thresholded at the
@@ -1154,10 +1161,10 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
 
     Each of those had to be got right in turn: an area margin of 3x quietly
     allowed a 1.7x wider region; a width inferred from area reads a scatter of
-    pixels spread over the whole gel as a small compact blob; and width alone
+    pixels spread over the whole dosimeter as a small compact blob; and width alone
     accepts an elongated smear of about the right width.
     """
-    interior = gel_interior_mask(dose_map, mm_per_pixel_xz)
+    interior = dosimeter_interior_mask(dose_map, mm_per_pixel_xz)
     inside = dose_map[interior]
     if inside.size == 0:
         Z, X = dose_map.shape
@@ -1180,7 +1187,7 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     # Width from the spread of the weight about its centroid, not from its area.
     # Area only gives a width if the region is one blob, and on a real scan it
     # was not: 4479 scattered pixels read as 7.2 mm by area while actually
-    # spanning 41 mm of gel.  For a uniform disc of diameter D the RMS radius is
+    # spanning 41 mm of dosimeter.  For a uniform disc of diameter D the RMS radius is
     # D/(2*sqrt(2)), which is where the factor below comes from.
     zs, xs = np.nonzero(weights)
     wv = weights[zs, xs]
@@ -1211,16 +1218,16 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     return zc, xc, diameter_mm, elongation, plausible
 
 
-def gel_interior_mask(dose_map, mm_per_pixel_xz, wall_margin_mm=1.5):
+def dosimeter_interior_mask(dose_map, mm_per_pixel_xz, wall_margin_mm=1.5):
     """
-    Mask keeping only the gel inside the vial wall.
+    Mask keeping only the dosimeter inside its edge.
 
     The wall is the brightest thing in a ΔA slice whenever it fails to cancel
     perfectly, and being concentric with the rotation axis its centroid sits
     dead centre.  That is enough to drag a whole-slice centroid to the middle of
     the image however hard the dose map is thresholded, because the wall is both
     brighter and larger in area than a beam this small.  No dose is deposited in
-    the glass, so excluding it costs nothing.
+    an optical artefact rather than dose, so excluding it costs little.
 
     The wall radius is found as the strongest peak in the radial mean profile,
     searched outside the middle of the field so the central cupping artefact
@@ -1260,10 +1267,10 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     of depth slices within the sample region.
 
     The top and bottom of the sample region carry strong reconstruction
-    artefacts from the meniscus and the base of the vial, so a guard band at
-    each end is excluded from the search for peak slices.  On a real scan the
+    artefacts from the dosimeter's end faces, so a guard band at each end is
+    excluded from the search for peak slices.  On a real scan the
     first slice ran 1139% above the median of the column, which made the
-    brightest slices the edge ones and put the "dose" centroid on the meniscus.
+    brightest slices the edge ones and put the "dose" centroid on an end face.
 
     The baseline is a low percentile of the depth profile, not the mean of the
     end slices.  With that same edge artefact inside the averaging window, the
@@ -2478,8 +2485,8 @@ class ScanWorker(QObject):
         return the angle the subtraction should compensate by.
 
         The subtraction assumes the dosimeter goes back in exactly the same
-        orientation.  Nobody can see a 30° error by eye once the vial is in the
-        holder, and the operator is the only person who will ever look at this
+        orientation.  Nobody can see a 30° error by eye once the dosimeter is in
+        the holder, and the operator is the only person who will ever look at this
         scan, so neither detecting it later nor handing it to an analyst is an
         option.  The app measures it, corrects it, and says what it did.
 
@@ -2551,7 +2558,7 @@ class ScanWorker(QObject):
     def _compute_subtracted(self, pre_dir: Path, post_dir: Path, subtracted_dir: Path,
                              flat: np.ndarray, progress_cb=None,
                              angle_offset_deg: float = 0.0,
-                             mask_walls: bool = MASK_WALLS):
+                             mask_edges: bool = MASK_EDGES):
         """
         Compute ΔA = A_post − A_pre in the OD domain and save as uint16 PNG.
 
@@ -2569,8 +2576,8 @@ class ScanWorker(QObject):
         Pixels where either frame falls below MIN_VALID_COUNTS are masked to
         ΔA = 0: down there the log ratio is quantisation noise, and a frame that
         reads zero would otherwise be clamped to 1e-6 and produce a ~14 OD
-        spike.  This is what made the vial wall the brightest thing in the
-        reconstruction.
+        spike.  This is what made the dosimeter's edge the brightest thing in
+        the reconstruction.
 
         ΔA is kept signed (see OD_SCALE_V2) — clipping it at zero rectifies
         noise and biases zero-dose regions positive.
@@ -2606,7 +2613,7 @@ class ScanWorker(QObject):
 
         n = len(angles)
         masked_total = 0
-        no_walls = 0
+        no_edges = 0
         centres_pre, centres_post = [], []
         for i, angle in enumerate(angles):
             pf, qf = pre_by_angle[angle], post_by_angle[_target(angle)]
@@ -2622,20 +2629,20 @@ class ScanWorker(QObject):
             A_post = -np.log(np.clip(post_img, MIN_VALID_COUNTS, None) / flat_f)
             delta_A = np.where(valid, A_post - A_pre, 0.0)
 
-            # Keep only the rays that pass through gel.  Everywhere else ΔA is
-            # zero by construction, so whatever was measured there is
-            # misregistration residual, and at the vial wall that residual is
-            # the largest signal in the frame.
-            if mask_walls:
-                wp = find_vial_walls(pre_img)
-                wq = find_vial_walls(post_img)
+            # Keep only the rays that pass usefully through the dosimeter.
+            # Outside it ΔA is zero by construction; at the edge it is dominated
+            # by refraction at the surface, which is the largest signal in the
+            # frame and carries no dose information.
+            if mask_edges:
+                wp = find_dosimeter_edges(pre_img)
+                wq = find_dosimeter_edges(post_img)
                 if wp is not None:
                     centres_pre.append(0.5 * (wp[0] + wp[1]))
                 if wq is not None:
                     centres_post.append(0.5 * (wq[0] + wq[1]))
-                keep = gel_support_mask(delta_A.shape[1], wp, wq)
+                keep = dosimeter_support_mask(delta_A.shape[1], wp, wq)
                 if keep is None:
-                    no_walls += 1
+                    no_edges += 1
                 else:
                     delta_A = delta_A * keep[None, :]
 
@@ -2650,20 +2657,22 @@ class ScanWorker(QObject):
                       f"as below {MIN_VALID_COUNTS:g} counts.")
         if pct > 5.0:
             self.log.emit("⚠ Large masked fraction — check lamp brightness and exposure.")
-        if mask_walls:
-            self._report_wall_masking(n, no_walls, centres_pre, centres_post,
+        if mask_edges:
+            self._report_edge_masking(n, no_edges, centres_pre, centres_post,
                                       pre_dir.parent)
         write_subtracted_encoding(subtracted_dir)
 
-    def _report_wall_masking(self, n, no_walls, centres_pre, centres_post, scan_dir):
-        """Log what the wall mask did, and how differently the vial was seated."""
-        if no_walls:
-            self.log.emit(f"⚠ Vial walls not found in {no_walls} of {n} projections; "
+    def _report_edge_masking(self, n, no_edges, centres_pre, centres_post, scan_dir):
+        """Log what the edge mask did, and how differently the dosimeter sat."""
+        if no_edges:
+            self.log.emit(f"⚠ Dosimeter edges not found in {no_edges} of {n} "
+                          f"projections; "
                           f"those were left unmasked.")
         else:
-            self.log.emit(f"Masked everything outside the gel in all {n} projections.")
+            self.log.emit(f"Masked everything outside the dosimeter in all "
+                          f"{n} projections.")
 
-        # The swing of the wall centre over a rotation is the vial's orbit about
+        # The swing of the edge centre over a rotation is the dosimeter's orbit about
         # the axis.  A rotation changes that swing's phase, never its size, so
         # when the two differ no rotation can align the scans, which is worth
         # saying plainly next to the rotation check that will have failed.
@@ -2676,15 +2685,15 @@ class ScanWorker(QObject):
                                "centre_px": float(arr.mean())}
         if len(stats) == 2:
             a, b = stats["pre"]["orbit_mm"], stats["post"]["orbit_mm"]
-            self.log.emit(f"Vial sat {a:.2f} mm off the rotation axis for the "
-                          f"pre-irradiation scan and {b:.2f} mm for the post scan.")
+            self.log.emit(f"Dosimeter sat {a:.2f} mm off the rotation axis for "
+                          f"the pre-irradiation scan and {b:.2f} mm for the post scan.")
             if abs(a - b) > 0.3:
                 self.log.emit("⚠ The dosimeter was seated at a different distance "
                               "from the axis in the two sessions. No rotation can "
                               "line those up, so the wall would not have cancelled; "
                               "masking it is what keeps it out of the reconstruction.")
             try:
-                (Path(scan_dir) / "vial_seating.json").write_text(
+                (Path(scan_dir) / "dosimeter_seating.json").write_text(
                     json.dumps(stats, indent=2))
             except OSError:
                 pass

@@ -14,19 +14,22 @@ in, tested against synthetic data, but **not yet validated on real hardware**.
 
 Next steps, in order:
 
-1. Deploy the updated `camera_server.py` to the Pi and confirm
+1. **Check the squareness of the dosimeter base and the mount seat.** Mechanical,
+   not software, and the single thing most likely to make the next scan work.
+   See the tilt finding of 2026-08-19.
+2. Deploy the updated `camera_server.py` to the Pi and confirm
    `/capture?depth=16` returns a 16-bit PNG. The app falls back to 8-bit
    silently if the server is not updated, so this is easy to miss.
-2. Re-run the subtraction on any scan that still has `pre/` and `post/`. That
-   gets the current signed encoding, the rotation correction, and a recorded
-   post-scan date. Scans where only `subtracted/` survives can still be
-   reconstructed, but stay on whatever encoding they were written with.
-3. Force a new attenuation volume when reconstructing anything scanned before
+3. Re-run the subtraction on any scan that still has `pre/` and `post/`. That
+   gets the current signed encoding, the rotation correction, the edge masking
+   and a recorded post-scan date. Scans where only `subtracted/` survives can
+   still be reconstructed, but stay on whatever encoding they were written with.
+4. Force a new attenuation volume when reconstructing anything scanned before
    2026-08-17. Cached `attenuation_volume.npy` files are stale, and legacy
    scans now decode 256x larger than they used to (correctly, see below).
-4. Re-run the sanity check on `scan_20260701_101800` and see how much of the
-   vial wall ring survives.
-5. Get a real Δφ for `scan_20260701_101800` by re-running the subtraction on its
+5. Re-run the sanity check on `scan_20260701_101800` and see how much of the
+   edge ring survives.
+6. Get a real Δφ for `scan_20260701_101800` by re-running the subtraction on its
    existing `pre/` and `post/` folders. The measurement and correction now run
    automatically, so this also repairs that scan. Check `rotation_offset.json`
    afterwards, above all `match_separation_sigma`: that scan had bubbles in the
@@ -35,17 +38,14 @@ Next steps, in order:
    bubbles that stayed put, correcting the rotation should make them cancel and
    they should largely disappear. If they persist, they changed between
    sessions and no rotation correction can remove them.
-6. Check the two rotation thresholds against real scans (see the calibration
+7. Check the two rotation thresholds against real scans (see the calibration
    note below). One real scan has now exercised the separation gate, where it
    correctly refused at 1.9 sigma; the accept side is still synthetic only.
-7. Check the vial and mount for squareness (see the tilt finding below). This
-   is a mechanical fix, not a software one, and it is the single thing most
-   likely to make the next scan work.
 
 ### Known open problem: pre/post registration
 
 The dosimeter is removed, irradiated elsewhere over days, and reseated, and how
-it goes back matters: a sub-pixel offset at the vial wall (the highest-contrast
+it goes back matters: a sub-pixel offset at the dosimeter edge (the highest-contrast
 edge in the frame) leaves a bipolar residual that survives the subtraction and
 drives the streak artefacts.
 
@@ -54,8 +54,9 @@ automatically (see below).
 
 **Rotation was assumed to be the only degree of freedom that matters here**, on
 the basis that the mount fixes the dosimeter in every other respect. A real scan
-disproved that on 2026-08-19: the dosimeter orbited the axis at 1.3 mm in one
-session and 0.4 mm in the next. Translation is therefore real, is measured as
+disproved that on 2026-08-19, though not in the way first written up: the
+dosimeter is a tight fit and is seated consistently, but it **leans**, by 1.78
+degrees in one session and 0.23 degrees in the next. Translation is therefore real, is measured as
 `residual_lateral_px`, and is still **not corrected**. It is logged rather than
 raised at the operator, who cannot act on it, and it is the usual explanation
 when no rotation fits.
@@ -64,7 +65,7 @@ What remains uncorrected:
 
 - **Sub-step rotation.** The correction is quantised to the projection step, so
   it can be up to half a step out (1 degree at the usual 2 degree steps). For the
-  vial wall this is negligible, since only the vial's eccentricity matters, about
+  dosimeter edge this is negligible, since only the dosimeter's eccentricity matters, about
   0.5 mm. A bubble 15 mm off-axis still smears a few pixels. If that turns out to
   matter, the fix is to subtract in the volume domain instead: reconstruct pre and
   post separately, rotate the pre volume by Δφ about the Y axis, then subtract.
@@ -73,25 +74,73 @@ What remains uncorrected:
 
 ## Decisions
 
-### 2026-08-19: mask each projection to the gel
+### 2026-08-19: the dosimeter is tilted, not laterally offset
 
-ΔA is zero by construction outside the dosimeter and inside the glass, so the
-only place it can be non-zero is the gel between the walls. Anything measured
-elsewhere is misregistration residual, and the vial wall is the sharpest,
-highest-contrast edge in the frame. On `scan_20260702_101800` that residual
-reached +/-1.08 OD against a gel signal of about 0.1, and no rotation
+Corrects the 2026-08-18 conclusion that the dosimeter "sat at a different
+eccentricity". Challenged on the grounds that it is a tight fit in the mount,
+which is right: a tight fit rules out lateral slop but not tilt.
+
+Measuring the edge centre against **height** rather than at one band settles it.
+Restricting to bands where the measured width is actually the dosimeter (43 to
+47 mm; below about 60% of frame height the detector finds the mount instead, at
+a nominal 130 mm):
+
+| | tilt | direction | linear fit |
+|---|---|---|---|
+| pre (1 Jul) | 1.78 deg | 180 deg +/- 5 | R^2 0.928 |
+| post (19 Aug) | 0.23 deg | 59 deg +/- 5 | R^2 0.984 |
+
+The offset grows linearly with height, 0.30 mm to 2.00 mm across the pre scan,
+with a rock-steady phase and 0.3 to 0.4 px fit residuals. At the **bottom** of
+the measured range the two scans agree closely, 0.30 mm against 0.27 mm, so the
+dosimeter is seated the same and it is the lean that differs. That is tilt about
+a pivot near the base, not slop.
+
+Two further observations that probably explain the mechanism:
+
+- The measured width grows steadily with height, about 44.3 mm to 45.1 mm over
+  48 mm, so the dosimeter is slightly tapered, presumably from the casting
+  mould. A tapered cylinder in a tight mount wedges at whatever depth it
+  reaches, which is a route to a different lean each time.
+- The tilt *direction* rotated about 121 degrees between sessions, and the
+  rotation estimator's rejected best guess was -132 degrees. If the base is not
+  square to the axis, reseating the dosimeter rotated carries the tilt direction
+  round with it, and the net tilt is the vector sum of the base error and any
+  seat error, so its magnitude changes too. That fits 1.78 and 0.23 degrees at
+  roughly opposed orientations.
+
+**This is a mechanical fix, not a software one.** Check the squareness of the
+dosimeter base and of the mount seat. It is also a second, independent reason to
+insert the dosimeter at the same rotational orientation every time, using the
+marker dot: it makes the tilt reproducible even if the base is not square, so
+the edge cancels rather than having to be masked.
+
+### 2026-08-19: mask each projection to the dosimeter
+
+Outside the dosimeter ΔA is zero by construction, since those rays miss it, so
+zeroing there is exact. At the edge it is **not**: the dosimeter is solid
+urethane dyed throughout, so material near the surface darkens like any other
+and there is no inert wall as there would be with a liquid in a container. What
+dominates the edge is an optical artefact, rays grazing the curved surface and
+being refracted away, which carries no usable dose information and is the
+sharpest, highest-contrast feature in the frame. Masking it therefore discards a
+thin annulus of real dosimeter: a trade worth making while the beam is small and
+near the axis, and one to revisit if dose is ever expected near the surface.
+
+On `scan_20260702_101800` that edge residual reached +/-1.08 OD against a bulk
+signal of about 0.1, and no rotation
 correction can remove it when the dosimeter sat at a different distance from
 the axis in each session.
 
 Setting those columns to zero is a support constraint, not cosmetic smoothing.
 Measured on that scan: the reconstructed wall ring fell 55x (0.00330 to
-0.00006) while the gel interior was unchanged (0.00028 to 0.00027).
+0.00006) while the interior was unchanged (0.00028 to 0.00027).
 
 **It changed the dose verdict**, which is why it was worth doing rather than
 being merely tidy. Over the guarded sample region the centroid moved from
 16.2 mm off axis with a 33.4 mm-wide region (rejected) to 6.0 mm off axis with
-an 8.3 mm-wide region (accepted). The two reconstructions differ inside the gel
-by 13% of the gel signal.
+an 8.3 mm-wide region (accepted). The two reconstructions differ inside the dosimeter
+by 13% of the bulk signal.
 
 **But that region is still not a beam.** Principal widths 9.7 x 6.4 mm,
 elongation 1.51, spanning 1.5 to 11.8 mm from the axis, and its depth profile
@@ -124,7 +173,7 @@ seen for correct answers in the sweep. Its best guess was -132 degrees and it
 declined to apply it. First real exercise of that gate and it did the right
 thing rather than applying a wrong correction.
 
-**Why it refused, measured from the projections directly.** Finding the vial
+**Why it refused, measured from the projections directly.** Finding the dosimeter
 walls in all 180 frame pairs:
 
 | | pre (1 Jul) | post (19 Aug) |
@@ -133,7 +182,7 @@ walls in all 180 frame pairs:
 | wall spacing | 470.1 px | 472.2 px (scale 1.004) |
 | centre swing over a rotation | 27.0 px | 8.0 px |
 
-The vial orbited the axis at about 1.3 mm in July and 0.4 mm in August. Spacing
+The dosimeter orbited the axis at about 1.3 mm in July and 0.4 mm in August. Spacing
 is unchanged so it is not magnification. **No rotation can map one onto the
 other**, because rotating changes the phase of that swing and never its
 amplitude. So the mount does *not* fix everything but rotation, contrary to
@@ -142,31 +191,30 @@ what was assumed on 2026-08-18, and the wall can never cancel on this pair.
 **Three defects this exposed, all now fixed:**
 
 1. The depth dose baseline averaged the first and last 50 slices. The first
-   slice ran 1139% above the column median (meniscus artefact), which sat
+   slice ran 1139% above the column median (end-face artefact), which sat
    inside that window, lifted the baseline, and clipped **77.5% of the curve to
    exactly zero**. That reads as an absence of dose rather than as clipping.
    Baseline is now a low percentile; the same scan drops to 10.2% zero.
 2. Slice selection took the brightest 20% of slices with no edge guard, so the
-   meniscus won and the "dose" centroid sat on it. With a guard band the peak
+   end face won and the "dose" centroid sat on it. With a guard band the peak
    moves from 0.0 mm depth to 34.8 mm.
 3. The beam plausibility check compared *areas* with a 3x margin, which quietly
    allows a 1.7x wider region, and inferred width from area. Area only gives a
    width for a single blob: on this scan the region was 4479 scattered pixels
-   spanning 41 mm of gel, which the area measure read as 7.2 mm and passed as a
+   spanning 41 mm of dosimeter, which the area measure read as 7.2 mm and passed as a
    beam. Width now comes from the spread of the weight about its centroid, and
    the comparison is by diameter. Synthetic 3, 5, 8 and 10 mm beams still
    locate within 0.15 mm and pass; this scan now reads 33.9 mm and is rejected.
 
-**No recoverable beam in this scan.** The 99th percentile inside the gel is
+**No recoverable beam in this scan.** The 99th percentile inside the dosimeter is
 roughly flat with depth, and the brightest region is a scatter across the whole
 interior rather than anything compact. That is a statement about this
 reconstruction, whose dominant signal is the wall residual, not about whether
 the dosimeter holds dose.
 
-**Still open: the wall.** With the eccentricity differing between sessions, no
-rotation or frame re-pairing makes it cancel. Since ΔA in the glass is known to
-be zero, masking a band around the measured wall position in each projection
-before FBP would remove the dominant artefact honestly. Not yet done.
+**The edge.** With the seating differing between sessions, no rotation or frame
+re-pairing makes it cancel. Masking it in projection space does; see the entry
+above.
 
 ### 2026-08-19: one scan, one name, both dates
 
@@ -225,7 +273,7 @@ for when detection fails, which the code already anticipates and logs.
 
 The other three parameters stay editable, deliberately. `crop_top` and
 `crop_extent` are set by dragging the green square and only need to bracket the
-vial. `sample_top` and `sample_height` are a genuine experimental choice the app
+dosimeter. `sample_top` and `sample_height` are a genuine experimental choice the app
 cannot infer.
 
 **Changed settings are reported at reconstruct time.** Since settings are now
@@ -250,12 +298,12 @@ centroid was tracking it rather than the beam.
 
 Two changes, both needed:
 
-1. **Exclude the vial wall** (`gel_interior_mask`). Whenever the wall fails to
+1. **Exclude the dosimeter edge** (`dosimeter_interior_mask`). Whenever the wall fails to
    cancel it is the brightest thing in the slice, and being concentric with the
    rotation axis its centroid sits dead centre. That pulls a whole-slice
    centroid to the middle no matter how hard the map is thresholded, because
    the wall is both brighter and larger in area than a small beam. No dose is
-   deposited in glass, so excluding it costs nothing. The wall radius is found
+   refraction rather than dose, so excluding it costs little. The wall radius is found
    as the strongest peak in the radial mean profile, searched outside the middle
    of the field so the central cupping cannot be mistaken for it.
 2. **Threshold at half the peak above background**, the FWHM convention. An
@@ -326,7 +374,7 @@ ring and the paired bright / clipped-to-zero sinusoids in the sinogram.
 **The check runs inside the app, not as a script.** The first version of this
 was a standalone command-line diagnostic, which was the wrong shape: the person
 running the scanner is not computer-literate and will not run a Python script.
-Nobody can see a 30 degree error by eye once the vial is in the holder, and the
+Nobody can see a 30 degree error by eye once the dosimeter is in the holder, and the
 consequence only shows up days later in a reconstruction that nobody at the
 scanner is looking at. So it runs automatically after the post scan and raises a
 plain-language dialog (`ScanWorker.alert`, new signal) while the operator is
@@ -383,7 +431,7 @@ contamination on top, not a distortion of the dose.
 
 ### 2026-08-17: projection encoding and pairing rework
 
-Triggered by a sanity-check figure where the vial wall was the brightest
+Triggered by a sanity-check figure where the dosimeter edge was the brightest
 feature in a ΔA reconstruction. It should have cancelled entirely, since it is
 identical in both scans.
 
@@ -391,7 +439,7 @@ identical in both scans.
 server was already averaging the frame stack in float32 and then rounding to
 uint8, which threw away the roughly 1.5 bits of extra precision the averaging
 had just bought for a stack of 8. That precision matters most where
-transmission is low and `-log(I/I0)` is steepest, which is exactly at the vial
+transmission is low and `-log(I/I0)` is steepest, which is exactly at the dosimeter
 wall. `?depth=16` is opt-in on the server so an un-updated Pi keeps working;
 `counts_from_raw()` accepts either depth so old scans keep reading correctly.
 

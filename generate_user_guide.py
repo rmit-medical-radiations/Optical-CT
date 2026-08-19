@@ -240,7 +240,8 @@ pdf.ln(4)
 pdf.section('Background: How optical CT dosimetry works')
 
 pdf.body(
-    'Optical CT dosimetry uses a polymer or radiochromic gel dosimeter that darkens '
+    'Optical CT dosimetry uses a radiochromic dosimeter, a solid urethane cylinder '
+    'dyed throughout, that darkens '
     'proportionally to the absorbed radiation dose.  The app quantifies this darkening '
     'by measuring the change in optical density (ΔA) between a pre-irradiation and a '
     'post-irradiation scan.'
@@ -391,7 +392,7 @@ pdf.section('Session 1 — Pre-irradiation scan')
 
 pdf.body(
     'This session is performed before the dosimeter is irradiated.  It captures the '
-    'baseline absorbance of the unirradiated gel.  A new scan folder is created and '
+    'baseline absorbance of the unirradiated dosimeter.  A new scan folder is created and '
     'named automatically using the current date and time.'
 )
 
@@ -470,7 +471,7 @@ pdf.section('Session 2 — Post-irradiation scan')
 
 pdf.body(
     'This session is performed after irradiation, ideally within the dosimeter\'s '
-    'stable post-irradiation window (consult the gel protocol for timing requirements).  '
+    'stable post-irradiation window (consult the dosimeter protocol for timing requirements).  '
     'The post-scan is stored alongside the pre-scan data in the same folder.  '
     'ΔA projections are computed automatically on completion.'
 )
@@ -554,7 +555,7 @@ pdf.step(4, 'Review the depth dose plot.',
          'Hover the cursor over the plot to read off interpolated values.')
 pdf.step(5, 'The dose centroid is detected automatically.',
          'The app finds the brightest 20 % of slices in the sample ROI, excludes the '
-         'vial wall, and computes the weighted centroid of everything above half the '
+         'dosimeter edge, and computes the weighted centroid of everything above half the '
          'peak dose.  It locates beams of a few mm upwards, on or off axis.  If the '
          'irradiated region it finds is far larger than the beam could be, the status '
          'panel warns that the centroid has probably found a reconstruction artefact '
