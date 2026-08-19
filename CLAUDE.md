@@ -25,7 +25,7 @@ Next steps, in order:
    `/capture?depth=16` returns a 16-bit PNG. The app falls back to 8-bit
    silently if the server is not updated, so this is easy to miss.
 4. Re-run the subtraction on any scan that still has `pre/` and `post/`, using
-   **Recompute ΔA from pre/post images** in the Reconstruction panel. That
+   **Recompute ΔA**, beside Run Reconstruction. That
    gets the current signed encoding, the rotation correction, the edge masking
    and a recorded post-scan date. Scans where only `subtracted/` survives can
    still be reconstructed, but stay on whatever encoding they were written with.
@@ -78,6 +78,23 @@ What remains uncorrected:
   second reconstruction.
 
 ## Decisions
+
+### 2026-08-19: reclaim the right-hand column for the dose plot
+
+The depth dose plot had been squeezed to a couple of centimetres by buttons
+stacked below it. Removed the two that duplicate the startup workflow dialog,
+"Export scan to USB drive" and "Load depth dose", both still reachable there,
+and moved "Recompute ΔA" up beside Run Reconstruction, where it belongs: the two
+are the same kind of action on the selected scan. The plot's stretch went from 2
+to 3 with three fewer rows competing for the space.
+
+`_load_depth_dose_file` stays, since the startup dialog's "View depth dose"
+option falls back to it when the chosen scan has no saved curve.
+
+Verified by rendering the window offscreen with the Qt offscreen platform,
+rather than by reasoning about the layout. Worth keeping as a technique: the
+plugin ignores resize hints, so set a fixed size on the central widget and grab
+that instead of the window.
 
 ### 2026-08-19: the depth dose shape is trustworthy, its peak depth is not
 
@@ -218,8 +235,8 @@ post-scan capture sequence, so the only route to re-processing was to repeat a
 capture that cannot be repeated once the dosimeter has been returned or has
 aged. The notes told the user to "re-run the subtraction" on a scan the app
 could not re-subtract. `SubtractionMixin` now holds that step, `ResubtractWorker`
-runs it standalone, and **Recompute ΔA from pre/post images** in the
-Reconstruction panel drives it. Verified on the real scan: 26 seconds, and the
+runs it standalone, and **Recompute ΔA**, beside Run Reconstruction,
+drives it. Verified on the real scan: 26 seconds, and the
 reconstruction goes from a 38.5 mm region at 2.88:1 to 8.9 mm at 1.18:1.
 
 Worth generalising from: a pipeline step reachable only by repeating an

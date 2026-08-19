@@ -552,7 +552,7 @@ pdf.step(2, 'Verify the crop and sample parameters.',
          '"Force new volume".')
 pdf.note(
     'A scan you have just captured needs nothing extra: the post-irradiation '
-    'session already did the subtraction.  "Recompute ΔA from pre/post images" is '
+    'session already did the subtraction.  "Recompute ΔA", the button beside "RECONSTRUCT", is '
     'only for older scans, and the status panel tells you when one needs it.  It '
     'redoes the subtraction from the images already saved with the scan, so nothing '
     'is re-captured; it takes about half a minute.  Reconstruct again afterwards '

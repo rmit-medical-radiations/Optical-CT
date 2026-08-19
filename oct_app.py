@@ -4197,35 +4197,32 @@ class MainWindow(QMainWindow):
         self.cancel_recon_btn.setObjectName("stop_btn")
         self.cancel_recon_btn.setMinimumHeight(36)
         self.cancel_recon_btn.setEnabled(False)
-        recon_btn_row.addWidget(self.recon_btn, 3)
-        recon_btn_row.addWidget(self.cancel_recon_btn, 1)
-        rg.addLayout(recon_btn_row, 8, 0, 1, 2)
-
-        # Re-processing an existing scan.  Needed whenever the subtraction
-        # changes, since reconstruction reads whatever is already in subtracted/.
-        self.resubtract_btn = QPushButton("Recompute ΔA from pre/post images")
+        # Re-processing an existing scan, alongside reconstruction rather than
+        # below it: the two are the same kind of action on the selected scan,
+        # and the row it used to occupy is worth more to the dose plot.
+        self.resubtract_btn = QPushButton("Recompute ΔA")
+        self.resubtract_btn.setMinimumHeight(36)
         self.resubtract_btn.setToolTip(
             "Redo the subtraction for the selected scan using its saved\n"
             "pre- and post-irradiation images. Nothing is re-captured.\n"
             "Use this when the status panel says the projections were made\n"
             "by an older version of the app.")
         self.resubtract_btn.setEnabled(False)
-        rg.addWidget(self.resubtract_btn, 9, 0, 1, 2)
+        recon_btn_row.addWidget(self.recon_btn, 3)
+        recon_btn_row.addWidget(self.resubtract_btn, 2)
+        recon_btn_row.addWidget(self.cancel_recon_btn, 1)
+        rg.addLayout(recon_btn_row, 8, 0, 1, 2)
 
         right.addWidget(recon_box)
 
-        # Export button
-        self.export_btn = QPushButton("Export scan to USB drive…")
-        right.addWidget(self.export_btn)
-
-        # Dose/depth plot
+        # Dose/depth plot.  Given the space the export and load buttons used to
+        # take: both actions remain on the startup workflow dialog, and the plot
+        # is the thing actually read here.
         plot_box = QGroupBox("Depth dose plot")
         pl2 = QVBoxLayout(plot_box)
         self.plot = DoseDepthPlot()
         pl2.addWidget(self.plot, 1)
-        self.load_dose_btn = QPushButton("Load depth dose…")
-        pl2.addWidget(self.load_dose_btn)
-        right.addWidget(plot_box, 2)
+        right.addWidget(plot_box, 3)
 
         # Status log
         log_box = QGroupBox("Log")
@@ -4253,10 +4250,8 @@ class MainWindow(QMainWindow):
         self.recon_btn.clicked.connect(self._start_reconstruction)
         self.cancel_recon_btn.clicked.connect(self._cancel_recon)
         self.resubtract_btn.clicked.connect(self._start_resubtract)
-        self.export_btn.clicked.connect(
-            lambda: ExportDialog(self, current_scan=self.scan_selector.currentData()).exec()
-        )
-        self.load_dose_btn.clicked.connect(self._load_depth_dose_file)
+
+
         self.phase_bar.phase_requested.connect(self._on_phase_requested)
         self.auto_axis_btn.clicked.connect(self._auto_detect_axis)
         self.scan_selector.currentIndexChanged.connect(self._on_scan_selected)
