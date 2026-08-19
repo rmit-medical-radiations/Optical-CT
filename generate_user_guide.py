@@ -550,6 +550,14 @@ pdf.step(2, 'Verify the crop and sample parameters.',
          'If a previous reconstruction exists, its parameters are loaded automatically.  '
          'Adjust if needed — changing any crop spinbox will automatically tick '
          '"Force new volume".')
+pdf.note(
+    'If the status panel says the projections were made before the dosimeter edge '
+    'was masked out, click "Recompute ΔA from pre/post images" first.  That redoes '
+    'the subtraction from the images already saved with the scan; nothing is '
+    're-captured, and it takes about half a minute.  Then reconstruct again with '
+    '"Force new volume" ticked, which the app sets for you.'
+)
+
 pdf.step(3, 'Click "RECONSTRUCT".',
          'Progress is shown in the progress bar.  FBP runs in parallel across CPU '
          'cores; a typical 700×700 crop takes 1–3 minutes depending on hardware.')

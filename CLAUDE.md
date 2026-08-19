@@ -24,7 +24,8 @@ Next steps, in order:
 3. Deploy the updated `camera_server.py` to the Pi and confirm
    `/capture?depth=16` returns a 16-bit PNG. The app falls back to 8-bit
    silently if the server is not updated, so this is easy to miss.
-4. Re-run the subtraction on any scan that still has `pre/` and `post/`. That
+4. Re-run the subtraction on any scan that still has `pre/` and `post/`, using
+   **Recompute ΔA from pre/post images** in the Reconstruction panel. That
    gets the current signed encoding, the rotation correction, the edge masking
    and a recorded post-scan date. Scans where only `subtracted/` survives can
    still be reconstructed, but stay on whatever encoding they were written with.
@@ -100,6 +101,19 @@ whatever is in `subtracted/`, so `encoding.json` now records `edge_masked`,
 `rotation_correction_deg` and `app_version`, and the reconstruction warns when
 the projections predate edge masking rather than producing a quietly wrong
 answer.
+
+**There was no way to re-run the subtraction.** It existed only inside the
+post-scan capture sequence, so the only route to re-processing was to repeat a
+capture that cannot be repeated once the dosimeter has been returned or has
+aged. The notes told the user to "re-run the subtraction" on a scan the app
+could not re-subtract. `SubtractionMixin` now holds that step, `ResubtractWorker`
+runs it standalone, and **Recompute ΔA from pre/post images** in the
+Reconstruction panel drives it. Verified on the real scan: 26 seconds, and the
+reconstruction goes from a 38.5 mm region at 2.88:1 to 8.9 mm at 1.18:1.
+
+Worth generalising from: a pipeline step reachable only by repeating an
+irreversible action is a step that cannot be re-run at all, and every change to
+it silently strands existing data.
 
 **Bug found in the same run.** `fills_dosimeter` reported false for that 38.5 mm
 region inside a 44 mm dosimeter. The dosimeter's width was being measured from

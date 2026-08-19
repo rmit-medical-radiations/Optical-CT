@@ -214,11 +214,11 @@ RADIAL_SMOOTH_BEAM_FACTOR = 1.5
 EDGE_MASK_INSET_PX = 12
 EDGE_MASK_TAPER_PX = 6
 MASK_EDGES = True
-# A wall must be at least this much darker than the backlit field to count as
+# An edge must be at least this much darker than the backlit field to count as
 # found, which is only meant to reject a frame with no dosimeter in it.
-# Measured wall contrast on a real scan ran 0.57 to 0.75 of the field, so a
-# tighter cutoff rejects real walls: 0.75 threw out 15 of 180 pre frames whose
-# wall columns were perfectly sensible.
+# Measured edge contrast on a real scan ran 0.57 to 0.75 of the field, so a
+# tighter cutoff rejects real edges: 0.75 threw out 15 of 180 pre frames whose
+# edge columns were perfectly sensible.
 EDGE_MIN_CONTRAST = 0.90
 
 
@@ -668,7 +668,7 @@ def find_dosimeter_edges(counts, row_lo=0.30, row_hi=0.70, margin=0.15):
         return None
     left = int(np.argmin(prof[lo:mid])) + lo
     right = int(np.argmin(prof[mid:hi])) + mid
-    # A wall has to actually be dark relative to the backlit field, or we have
+    # An edge has to actually be dark relative to the backlit field, or we have
     # locked onto noise in an empty frame.
     backlit = float(np.median(prof[lo:hi]))
     if backlit <= 0 or min(prof[left], prof[right]) > EDGE_MIN_CONTRAST * backlit:
@@ -920,7 +920,7 @@ def estimate_rotation_offset(pre_dir, post_dir, row_lo=0.30, row_hi=0.70,
 
     # Measured but not a gate.  A real scan showed this is usually the dosimeter
     # sitting differently in the holder rather than the rig moving: between two
-    # sessions its wall centre swung 27 px over a rotation in one and 8 px in
+    # sessions its edge centre swung 27 px over a rotation in one and 8 px in
     # the other, so it orbited the axis at 1.3 mm and then at 0.4 mm.  No
     # rotation maps one onto the other, since rotating changes the phase of that
     # swing and never its amplitude, and that is exactly when the match above
@@ -1226,7 +1226,7 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     Two things have to be got right because the beam is small: under 2% of the
     slice at 10 mm across on a 66 mm grid.
 
-    The wall is excluded first (see dosimeter_interior_mask).  Then the threshold is
+    The edge is excluded first (see dosimeter_interior_mask).  Then the threshold is
     taken at half of the peak above the local background, which is the usual
     FWHM convention and, being a contrast ratio rather than an area, needs no
     assumption about how big the beam is.  This function once thresholded at the
@@ -1315,20 +1315,20 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     return zc, xc, diameter_mm, elongation, fills_dosimeter
 
 
-def dosimeter_interior_mask(dose_map, mm_per_pixel_xz, wall_margin_mm=1.5):
+def dosimeter_interior_mask(dose_map, mm_per_pixel_xz, edge_margin_mm=1.5):
     """
     Mask keeping only the dosimeter inside its edge.
 
-    The wall is the brightest thing in a ΔA slice whenever it fails to cancel
+    The edge is the brightest thing in a ΔA slice whenever it fails to cancel
     perfectly, and being concentric with the rotation axis its centroid sits
     dead centre.  That is enough to drag a whole-slice centroid to the middle of
-    the image however hard the dose map is thresholded, because the wall is both
+    the image however hard the dose map is thresholded, because the edge is both
     brighter and larger in area than a beam this small.  No dose is deposited in
     an optical artefact rather than dose, so excluding it costs little.
 
-    The wall radius is found as the strongest peak in the radial mean profile,
+    The edge radius is found as the strongest peak in the radial mean profile,
     searched outside the middle of the field so the central cupping artefact
-    cannot be mistaken for it.  If no clear wall stands out, everything is kept.
+    cannot be mistaken for it.  If no clear edge stands out, everything is kept.
     """
     Z, X = dose_map.shape
     zz, xx = np.ogrid[0:Z, 0:X]
@@ -1345,9 +1345,9 @@ def dosimeter_interior_mask(dose_map, mm_per_pixel_xz, wall_margin_mm=1.5):
     peak = float(profile[outer].max())
     typical = float(np.median(profile[outer]))
     if peak <= typical * 1.5:
-        return r <= 0.95 * r_max          # no wall stands out; keep the field
-    wall_r = float(radii[outer][int(np.argmax(profile[outer]))])
-    return r <= max(wall_r - wall_margin_mm / float(mm_per_pixel_xz),
+        return r <= 0.95 * r_max          # no edge stands out; keep the field
+    edge_r = float(radii[outer][int(np.argmax(profile[outer]))])
+    return r <= max(edge_r - edge_margin_mm / float(mm_per_pixel_xz),
                     0.2 * r_max)
 
 
@@ -2269,7 +2269,323 @@ class PhaseButtonBar(QWidget):
 # Scan worker — runs in QThread
 # ──────────────────────────────────────────────────────────────────────────────
 
-class ScanWorker(QObject):
+# ──────────────────────────────────────────────────────────────────────────────
+# ΔA subtraction, shared by the post-scan worker and re-processing
+# ──────────────────────────────────────────────────────────────────────────────
+
+class SubtractionMixin:
+    """
+    Turning a pre/post pair into ΔA projections.
+
+    Held apart from the scan worker because it has to be runnable on its own:
+    the processing has changed several times, and every change leaves existing
+    scans needing to be put through it again.  A pipeline step reachable only by
+    repeating an irreversible capture is a step that cannot be re-run at all.
+
+    Users of this mixin must provide `log` and `alert` signals.
+    """
+
+    def _check_rotation_offset(self, pre_dir: Path, post_dir: Path) -> float:
+        """
+        Measure how far the dosimeter was rotated between the two sessions, and
+        return the angle the subtraction should compensate by.
+
+        The subtraction assumes the dosimeter goes back in exactly the same
+        orientation.  Nobody can see a 30° error by eye once the dosimeter is in
+        the holder, and the operator is the only person who will ever look at this
+        scan, so neither detecting it later nor handing it to an analyst is an
+        option.  The app measures it, corrects it, and says what it did.
+
+        Returns the correction in degrees, rounded to a whole projection step
+        (0.0 if none is needed or none can be trusted).  Never raises: a scan
+        that is merely uncorrected is far better than no scan at all.
+        """
+        self.log.emit("Checking the dosimeter went back the same way round…")
+        try:
+            r = estimate_rotation_offset(pre_dir, post_dir)
+        except Exception as e:
+            self.log.emit(f"⚠ Could not check dosimeter orientation: {e}")
+            return 0.0
+
+        # delta_phi_deg is already a whole number of steps: pairing with a frame
+        # that was actually captured is exact, where interpolating between two
+        # frames would not be.
+        dphi = applied = r["delta_phi_deg"]
+        (pre_dir.parent / "rotation_offset.json").write_text(json.dumps(r, indent=2))
+
+        self.log.emit(f"Dosimeter orientation: {dphi:+.1f}° relative to the "
+                      f"pre-irradiation scan "
+                      f"({'reliable' if r['confident'] else 'UNRELIABLE'} measurement).")
+        for note in r["notes"]:
+            self.log.emit(f"  · {note}")
+
+        ADVICE = ("\n\nTo avoid this next time: use the marker dot on top of the "
+                  "dosimeter to line it up the same way round as it was for the "
+                  "pre-irradiation scan, before you start.")
+
+        if not r["confident"]:
+            self.log.emit("⚠ Orientation check inconclusive, subtracting without "
+                          "correction.")
+            self.alert.emit(
+                "Check the dosimeter position",
+                "The app could not work out whether the dosimeter went back into "
+                "the holder the same way round as it was for the "
+                "pre-irradiation scan.\n\n"
+                "The scan has been saved and processed as usual. If the "
+                "dosimeter was turned when you put it back, the dose results "
+                "for this scan may be wrong." + ADVICE)
+            return 0.0
+
+        if applied == 0.0:
+            self.log.emit("✓ Dosimeter orientation matches the pre-irradiation scan.")
+            return 0.0
+
+        self.log.emit(f"Correcting for a {dphi:+.0f}° dosimeter rotation: "
+                      f"pairing each pre-irradiation frame with the "
+                      f"post-irradiation frame {r['frame_shift']} positions along.")
+
+        if abs(dphi) >= ROTATION_ALERT_DEG:
+            lateral = r["residual_lateral_px"]
+            # Only claim the scan is sound when nothing else looks out of place.
+            outcome = (
+                "The app has lined the two scans back up automatically, so this "
+                "scan is still good and you do not need to do anything."
+                if lateral is not None and lateral <= ROTATION_MAX_LATERAL_PX else
+                "The app has lined the two scans back up automatically, but the "
+                "images are also shifted sideways, which the holder should not "
+                "allow. Please mention this to whoever looks after the scanner.")
+            self.alert.emit(
+                "Dosimeter was turned round",
+                f"The dosimeter went back into the holder about {abs(dphi):.0f}° "
+                f"round from where it was for the pre-irradiation scan.\n\n"
+                + outcome + ADVICE)
+        return applied
+
+    def _compute_subtracted(self, pre_dir: Path, post_dir: Path, subtracted_dir: Path,
+                             flat: np.ndarray, progress_cb=None,
+                             angle_offset_deg: float = 0.0,
+                             mask_edges: bool = MASK_EDGES):
+        """
+        Compute ΔA = A_post − A_pre in the OD domain and save as uint16 PNG.
+
+        A = −log(I / I₀) where I₀ is the flat-field image.
+
+        Frames are paired by the rotation angle in the filename, not by sort
+        order, so a pre and post scan that used a different starting angle or
+        step size cannot be silently mismatched.
+
+        angle_offset_deg compensates for a dosimeter that was reseated rotated
+        between the two sessions (see _check_rotation_offset).  It must be a
+        whole number of projection steps, so that every pair is two frames that
+        were actually captured rather than an interpolation between frames.
+
+        Pixels where either frame falls below MIN_VALID_COUNTS are masked to
+        ΔA = 0: down there the log ratio is quantisation noise, and a frame that
+        reads zero would otherwise be clamped to 1e-6 and produce a ~14 OD
+        spike.  This is what made the dosimeter's edge the brightest thing in
+        the reconstruction.
+
+        ΔA is kept signed (see OD_SCALE_V2) — clipping it at zero rectifies
+        noise and biases zero-dose regions positive.
+
+        Note: the flat field cancels in the subtraction (ΔA = log(I_pre/I_post)),
+        so the result is independent of flat-field drift between sessions.
+        """
+        flat_f = np.clip(flat.astype(np.float32), 1e-6, None)
+        pre_by_angle  = self._index_by_angle(pre_dir)
+        post_by_angle = self._index_by_angle(post_dir)
+
+        # A dosimeter reseated Δφ round shows, at motor angle θ in the post scan,
+        # what the pre scan saw at θ + Δφ.  So pre angle θ pairs with post angle
+        # θ − Δφ, and the resulting ΔA belongs to the sample's own frame at θ:
+        # the output keeps the *pre* angle, and the projection geometry is
+        # unchanged.
+        def _target(angle):
+            return int(round(angle - angle_offset_deg)) % 360
+
+        angles    = sorted(a for a in pre_by_angle if _target(a) in post_by_angle)
+        only_pre  = sorted(a for a in pre_by_angle if _target(a) not in post_by_angle)
+        unused    = sorted(set(post_by_angle) - {_target(a) for a in angles})
+        if only_pre or unused:
+            self.log.emit(
+                f"⚠ pre/post angles do not match — {len(angles)} paired, "
+                f"{len(only_pre)} pre-only ({only_pre[:5]}…), "
+                f"{len(unused)} post-only ({unused[:5]}…). "
+                f"Reconstruction will use the paired angles only.")
+        if not angles:
+            raise RuntimeError(
+                "No pre/post frames could be paired — the two scans used "
+                "incompatible angle settings and cannot be subtracted.")
+
+        n = len(angles)
+        masked_total = 0
+        no_edges = 0
+        centres_pre, centres_post = [], []
+        for i, angle in enumerate(angles):
+            pf, qf = pre_by_angle[angle], post_by_angle[_target(angle)]
+            pre_img  = imread_counts(pf)
+            post_img = imread_counts(qf)
+            if pre_img is None or post_img is None:
+                raise RuntimeError(f"Failed to read {pf if pre_img is None else qf}")
+
+            valid = (pre_img >= MIN_VALID_COUNTS) & (post_img >= MIN_VALID_COUNTS)
+            masked_total += int(valid.size - valid.sum())
+
+            A_pre  = -np.log(np.clip(pre_img,  MIN_VALID_COUNTS, None) / flat_f)
+            A_post = -np.log(np.clip(post_img, MIN_VALID_COUNTS, None) / flat_f)
+            delta_A = np.where(valid, A_post - A_pre, 0.0)
+
+            # Keep only the rays that pass usefully through the dosimeter.
+            # Outside it ΔA is zero by construction; at the edge it is dominated
+            # by refraction at the surface, which is the largest signal in the
+            # frame and carries no dose information.
+            if mask_edges:
+                wp = find_dosimeter_edges(pre_img)
+                wq = find_dosimeter_edges(post_img)
+                if wp is not None:
+                    centres_pre.append(0.5 * (wp[0] + wp[1]))
+                if wq is not None:
+                    centres_post.append(0.5 * (wq[0] + wq[1]))
+                keep = dosimeter_support_mask(delta_A.shape[1], wp, wq)
+                if keep is None:
+                    no_edges += 1
+                else:
+                    delta_A = delta_A * keep[None, :]
+
+            out = np.clip((delta_A + OD_OFFSET) * OD_SCALE_V2,
+                          0, 65535).astype(np.uint16)
+            cv2.imwrite(str(subtracted_dir / f"img_{i:04d}_{angle:03d}_deg.png"), out)
+            if progress_cb:
+                progress_cb(int((i + 1) / n * 100))
+
+        pct = 100.0 * masked_total / max(1, n * flat_f.size)
+        self.log.emit(f"Subtraction: {n} angle pairs, {pct:.2f}% of pixels masked "
+                      f"as below {MIN_VALID_COUNTS:g} counts.")
+        if pct > 5.0:
+            self.log.emit("⚠ Large masked fraction — check lamp brightness and exposure.")
+        if mask_edges:
+            self._report_edge_masking(n, no_edges, centres_pre, centres_post,
+                                      pre_dir.parent)
+        write_subtracted_encoding(
+            subtracted_dir,
+            edge_masked=bool(mask_edges and no_edges < n),
+            rotation_correction_deg=float(angle_offset_deg))
+
+    def _report_edge_masking(self, n, no_edges, centres_pre, centres_post, scan_dir):
+        """Log what the edge mask did, and how differently the dosimeter sat."""
+        if no_edges:
+            self.log.emit(f"⚠ Dosimeter edges not found in {no_edges} of {n} "
+                          f"projections; "
+                          f"those were left unmasked.")
+        else:
+            self.log.emit(f"Masked everything outside the dosimeter in all "
+                          f"{n} projections.")
+
+        # The swing of the edge centre over a rotation is the dosimeter's orbit about
+        # the axis.  A rotation changes that swing's phase, never its size, so
+        # when the two differ no rotation can align the scans, which is worth
+        # saying plainly next to the rotation check that will have failed.
+        stats = {}
+        for name, c in (("pre", centres_pre), ("post", centres_post)):
+            if len(c) >= 8:
+                arr = np.asarray(c, dtype=float)
+                stats[name] = {"orbit_mm": float((arr.max() - arr.min()) / 2
+                                                 * MM_PER_PIXEL_XZ),
+                               "centre_px": float(arr.mean())}
+        if len(stats) == 2:
+            a, b = stats["pre"]["orbit_mm"], stats["post"]["orbit_mm"]
+            self.log.emit(f"Dosimeter swept {a:.2f} mm about the rotation axis in "
+                          f"the pre-irradiation scan and {b:.2f} mm in the post scan.")
+            if abs(a - b) > 0.3:
+                self.log.emit("⚠ The dosimeter leaned differently in the two "
+                              "sessions. A rotation changes the direction of that "
+                              "lean, never its size, so no rotation can line the "
+                              "two up and the edge cannot cancel; masking it is "
+                              "what keeps it out of the reconstruction. Check the "
+                              "dosimeter base and the mount seat for squareness.")
+            try:
+                (Path(scan_dir) / "dosimeter_seating.json").write_text(
+                    json.dumps(stats, indent=2))
+            except OSError:
+                pass
+
+    @staticmethod
+    def _index_by_angle(img_dir: Path) -> dict:
+        """Map rotation angle (degrees) → file path for a projection directory."""
+        out = {}
+        for f in sorted(img_dir.glob("*.png")):
+            m = ANGLE_RE.match(f.name)
+            if m:
+                out[int(m.group("angle"))] = f
+        return out
+
+
+class ResubtractWorker(SubtractionMixin, QObject):
+    """
+    Re-run the ΔA subtraction on a scan that already has pre/ and post/ images.
+
+    Reconstruction reads whatever is in subtracted/, so when the subtraction
+    changes, every existing scan carries stale projections until it is put
+    through again.  Before this existed the only route was to repeat the post
+    scan, which is impossible once the dosimeter has been returned or has aged,
+    so scans were effectively frozen with whatever processing they were born
+    with.  A real scan reconstructed a 40 mm irradiated region for exactly that
+    reason, where re-processing the same data gives 9 mm.
+
+    Nothing is captured here.  pre/ and post/ are read, never written.
+    """
+    progress = pyqtSignal(int)
+    log      = pyqtSignal(str)
+    alert    = pyqtSignal(str, str)
+    finished = pyqtSignal(bool, str)
+
+    def __init__(self, scan_dir: Path):
+        super().__init__()
+        self.scan_dir = Path(scan_dir)
+
+    def run(self):
+        try:
+            pre_dir = self.scan_dir / "pre"
+            post_dir = self.scan_dir / "post"
+            subtracted_dir = self.scan_dir / "subtracted"
+            for d, what in ((pre_dir, "pre-irradiation"), (post_dir, "post-irradiation")):
+                if not d.is_dir() or not list(d.glob("*.png")):
+                    self.finished.emit(
+                        False, f"This scan has no {what} images, so ΔA cannot be "
+                               f"recomputed from it.")
+                    return
+
+            # The flat cancels in ΔA, but prefer the one captured with this scan.
+            flat = None
+            for candidate in (self.scan_dir / "calibration" / "flat.npy",
+                              CONFIG_DIR / "flat.npy"):
+                if candidate.exists():
+                    flat = np.load(str(candidate)).astype(np.float32)
+                    self.log.emit(f"Using flat field from {candidate}")
+                    break
+            if flat is None:
+                self.finished.emit(False, "No flat field found for this scan.")
+                return
+
+            if subtracted_dir.exists():
+                shutil.rmtree(subtracted_dir)
+            subtracted_dir.mkdir(parents=True)
+
+            self.log.emit(f"Recomputing ΔA for {self.scan_dir.name}…")
+            angle_offset = self._check_rotation_offset(pre_dir, post_dir)
+            self._compute_subtracted(pre_dir, post_dir, subtracted_dir, flat,
+                                     progress_cb=self.progress.emit,
+                                     angle_offset_deg=angle_offset)
+            self.log.emit(f"✓ ΔA projections rewritten to {subtracted_dir}")
+            self.finished.emit(
+                True, "ΔA recomputed. Reconstruct this scan again, with "
+                      "\"Force new volume\" ticked, to use it.")
+        except Exception as e:
+            self.finished.emit(False, f"Could not recompute ΔA: {e}\n"
+                                      f"{traceback.format_exc()}")
+
+
+class ScanWorker(SubtractionMixin, QObject):
     """
     Drives the full scan sequence with explicit user-gated phases.
 
@@ -2601,237 +2917,6 @@ class ScanWorker(QObject):
 
         return True
 
-    def _check_rotation_offset(self, pre_dir: Path, post_dir: Path) -> float:
-        """
-        Measure how far the dosimeter was rotated between the two sessions, and
-        return the angle the subtraction should compensate by.
-
-        The subtraction assumes the dosimeter goes back in exactly the same
-        orientation.  Nobody can see a 30° error by eye once the dosimeter is in
-        the holder, and the operator is the only person who will ever look at this
-        scan, so neither detecting it later nor handing it to an analyst is an
-        option.  The app measures it, corrects it, and says what it did.
-
-        Returns the correction in degrees, rounded to a whole projection step
-        (0.0 if none is needed or none can be trusted).  Never raises: a scan
-        that is merely uncorrected is far better than no scan at all.
-        """
-        self.log.emit("Checking the dosimeter went back the same way round…")
-        try:
-            r = estimate_rotation_offset(pre_dir, post_dir)
-        except Exception as e:
-            self.log.emit(f"⚠ Could not check dosimeter orientation: {e}")
-            return 0.0
-
-        # delta_phi_deg is already a whole number of steps: pairing with a frame
-        # that was actually captured is exact, where interpolating between two
-        # frames would not be.
-        dphi = applied = r["delta_phi_deg"]
-        (pre_dir.parent / "rotation_offset.json").write_text(json.dumps(r, indent=2))
-
-        self.log.emit(f"Dosimeter orientation: {dphi:+.1f}° relative to the "
-                      f"pre-irradiation scan "
-                      f"({'reliable' if r['confident'] else 'UNRELIABLE'} measurement).")
-        for note in r["notes"]:
-            self.log.emit(f"  · {note}")
-
-        ADVICE = ("\n\nTo avoid this next time: use the marker dot on top of the "
-                  "dosimeter to line it up the same way round as it was for the "
-                  "pre-irradiation scan, before you start.")
-
-        if not r["confident"]:
-            self.log.emit("⚠ Orientation check inconclusive, subtracting without "
-                          "correction.")
-            self.alert.emit(
-                "Check the dosimeter position",
-                "The app could not work out whether the dosimeter went back into "
-                "the holder the same way round as it was for the "
-                "pre-irradiation scan.\n\n"
-                "The scan has been saved and processed as usual. If the "
-                "dosimeter was turned when you put it back, the dose results "
-                "for this scan may be wrong." + ADVICE)
-            return 0.0
-
-        if applied == 0.0:
-            self.log.emit("✓ Dosimeter orientation matches the pre-irradiation scan.")
-            return 0.0
-
-        self.log.emit(f"Correcting for a {dphi:+.0f}° dosimeter rotation: "
-                      f"pairing each pre-irradiation frame with the "
-                      f"post-irradiation frame {r['frame_shift']} positions along.")
-
-        if abs(dphi) >= ROTATION_ALERT_DEG:
-            lateral = r["residual_lateral_px"]
-            # Only claim the scan is sound when nothing else looks out of place.
-            outcome = (
-                "The app has lined the two scans back up automatically, so this "
-                "scan is still good and you do not need to do anything."
-                if lateral is not None and lateral <= ROTATION_MAX_LATERAL_PX else
-                "The app has lined the two scans back up automatically, but the "
-                "images are also shifted sideways, which the holder should not "
-                "allow. Please mention this to whoever looks after the scanner.")
-            self.alert.emit(
-                "Dosimeter was turned round",
-                f"The dosimeter went back into the holder about {abs(dphi):.0f}° "
-                f"round from where it was for the pre-irradiation scan.\n\n"
-                + outcome + ADVICE)
-        return applied
-
-    def _compute_subtracted(self, pre_dir: Path, post_dir: Path, subtracted_dir: Path,
-                             flat: np.ndarray, progress_cb=None,
-                             angle_offset_deg: float = 0.0,
-                             mask_edges: bool = MASK_EDGES):
-        """
-        Compute ΔA = A_post − A_pre in the OD domain and save as uint16 PNG.
-
-        A = −log(I / I₀) where I₀ is the flat-field image.
-
-        Frames are paired by the rotation angle in the filename, not by sort
-        order, so a pre and post scan that used a different starting angle or
-        step size cannot be silently mismatched.
-
-        angle_offset_deg compensates for a dosimeter that was reseated rotated
-        between the two sessions (see _check_rotation_offset).  It must be a
-        whole number of projection steps, so that every pair is two frames that
-        were actually captured rather than an interpolation between frames.
-
-        Pixels where either frame falls below MIN_VALID_COUNTS are masked to
-        ΔA = 0: down there the log ratio is quantisation noise, and a frame that
-        reads zero would otherwise be clamped to 1e-6 and produce a ~14 OD
-        spike.  This is what made the dosimeter's edge the brightest thing in
-        the reconstruction.
-
-        ΔA is kept signed (see OD_SCALE_V2) — clipping it at zero rectifies
-        noise and biases zero-dose regions positive.
-
-        Note: the flat field cancels in the subtraction (ΔA = log(I_pre/I_post)),
-        so the result is independent of flat-field drift between sessions.
-        """
-        flat_f = np.clip(flat.astype(np.float32), 1e-6, None)
-        pre_by_angle  = self._index_by_angle(pre_dir)
-        post_by_angle = self._index_by_angle(post_dir)
-
-        # A dosimeter reseated Δφ round shows, at motor angle θ in the post scan,
-        # what the pre scan saw at θ + Δφ.  So pre angle θ pairs with post angle
-        # θ − Δφ, and the resulting ΔA belongs to the sample's own frame at θ:
-        # the output keeps the *pre* angle, and the projection geometry is
-        # unchanged.
-        def _target(angle):
-            return int(round(angle - angle_offset_deg)) % 360
-
-        angles    = sorted(a for a in pre_by_angle if _target(a) in post_by_angle)
-        only_pre  = sorted(a for a in pre_by_angle if _target(a) not in post_by_angle)
-        unused    = sorted(set(post_by_angle) - {_target(a) for a in angles})
-        if only_pre or unused:
-            self.log.emit(
-                f"⚠ pre/post angles do not match — {len(angles)} paired, "
-                f"{len(only_pre)} pre-only ({only_pre[:5]}…), "
-                f"{len(unused)} post-only ({unused[:5]}…). "
-                f"Reconstruction will use the paired angles only.")
-        if not angles:
-            raise RuntimeError(
-                "No pre/post frames could be paired — the two scans used "
-                "incompatible angle settings and cannot be subtracted.")
-
-        n = len(angles)
-        masked_total = 0
-        no_edges = 0
-        centres_pre, centres_post = [], []
-        for i, angle in enumerate(angles):
-            pf, qf = pre_by_angle[angle], post_by_angle[_target(angle)]
-            pre_img  = imread_counts(pf)
-            post_img = imread_counts(qf)
-            if pre_img is None or post_img is None:
-                raise RuntimeError(f"Failed to read {pf if pre_img is None else qf}")
-
-            valid = (pre_img >= MIN_VALID_COUNTS) & (post_img >= MIN_VALID_COUNTS)
-            masked_total += int(valid.size - valid.sum())
-
-            A_pre  = -np.log(np.clip(pre_img,  MIN_VALID_COUNTS, None) / flat_f)
-            A_post = -np.log(np.clip(post_img, MIN_VALID_COUNTS, None) / flat_f)
-            delta_A = np.where(valid, A_post - A_pre, 0.0)
-
-            # Keep only the rays that pass usefully through the dosimeter.
-            # Outside it ΔA is zero by construction; at the edge it is dominated
-            # by refraction at the surface, which is the largest signal in the
-            # frame and carries no dose information.
-            if mask_edges:
-                wp = find_dosimeter_edges(pre_img)
-                wq = find_dosimeter_edges(post_img)
-                if wp is not None:
-                    centres_pre.append(0.5 * (wp[0] + wp[1]))
-                if wq is not None:
-                    centres_post.append(0.5 * (wq[0] + wq[1]))
-                keep = dosimeter_support_mask(delta_A.shape[1], wp, wq)
-                if keep is None:
-                    no_edges += 1
-                else:
-                    delta_A = delta_A * keep[None, :]
-
-            out = np.clip((delta_A + OD_OFFSET) * OD_SCALE_V2,
-                          0, 65535).astype(np.uint16)
-            cv2.imwrite(str(subtracted_dir / f"img_{i:04d}_{angle:03d}_deg.png"), out)
-            if progress_cb:
-                progress_cb(int((i + 1) / n * 100))
-
-        pct = 100.0 * masked_total / max(1, n * flat_f.size)
-        self.log.emit(f"Subtraction: {n} angle pairs, {pct:.2f}% of pixels masked "
-                      f"as below {MIN_VALID_COUNTS:g} counts.")
-        if pct > 5.0:
-            self.log.emit("⚠ Large masked fraction — check lamp brightness and exposure.")
-        if mask_edges:
-            self._report_edge_masking(n, no_edges, centres_pre, centres_post,
-                                      pre_dir.parent)
-        write_subtracted_encoding(
-            subtracted_dir,
-            edge_masked=bool(mask_edges and no_edges < n),
-            rotation_correction_deg=float(angle_offset_deg))
-
-    def _report_edge_masking(self, n, no_edges, centres_pre, centres_post, scan_dir):
-        """Log what the edge mask did, and how differently the dosimeter sat."""
-        if no_edges:
-            self.log.emit(f"⚠ Dosimeter edges not found in {no_edges} of {n} "
-                          f"projections; "
-                          f"those were left unmasked.")
-        else:
-            self.log.emit(f"Masked everything outside the dosimeter in all "
-                          f"{n} projections.")
-
-        # The swing of the edge centre over a rotation is the dosimeter's orbit about
-        # the axis.  A rotation changes that swing's phase, never its size, so
-        # when the two differ no rotation can align the scans, which is worth
-        # saying plainly next to the rotation check that will have failed.
-        stats = {}
-        for name, c in (("pre", centres_pre), ("post", centres_post)):
-            if len(c) >= 8:
-                arr = np.asarray(c, dtype=float)
-                stats[name] = {"orbit_mm": float((arr.max() - arr.min()) / 2
-                                                 * MM_PER_PIXEL_XZ),
-                               "centre_px": float(arr.mean())}
-        if len(stats) == 2:
-            a, b = stats["pre"]["orbit_mm"], stats["post"]["orbit_mm"]
-            self.log.emit(f"Dosimeter sat {a:.2f} mm off the rotation axis for "
-                          f"the pre-irradiation scan and {b:.2f} mm for the post scan.")
-            if abs(a - b) > 0.3:
-                self.log.emit("⚠ The dosimeter was seated at a different distance "
-                              "from the axis in the two sessions. No rotation can "
-                              "line those up, so the wall would not have cancelled; "
-                              "masking it is what keeps it out of the reconstruction.")
-            try:
-                (Path(scan_dir) / "dosimeter_seating.json").write_text(
-                    json.dumps(stats, indent=2))
-            except OSError:
-                pass
-
-    @staticmethod
-    def _index_by_angle(img_dir: Path) -> dict:
-        """Map rotation angle (degrees) → file path for a projection directory."""
-        out = {}
-        for f in sorted(img_dir.glob("*.png")):
-            m = ANGLE_RE.match(f.name)
-            if m:
-                out[int(m.group("angle"))] = f
-        return out
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -3948,6 +4033,17 @@ class MainWindow(QMainWindow):
         recon_btn_row.addWidget(self.cancel_recon_btn, 1)
         rg.addLayout(recon_btn_row, 8, 0, 1, 2)
 
+        # Re-processing an existing scan.  Needed whenever the subtraction
+        # changes, since reconstruction reads whatever is already in subtracted/.
+        self.resubtract_btn = QPushButton("Recompute ΔA from pre/post images")
+        self.resubtract_btn.setToolTip(
+            "Redo the subtraction for the selected scan using its saved\n"
+            "pre- and post-irradiation images. Nothing is re-captured.\n"
+            "Use this when the status panel says the projections were made\n"
+            "by an older version of the app.")
+        self.resubtract_btn.setEnabled(False)
+        rg.addWidget(self.resubtract_btn, 9, 0, 1, 2)
+
         right.addWidget(recon_box)
 
         # Export button
@@ -3988,6 +4084,7 @@ class MainWindow(QMainWindow):
         self.cancel_scan_btn.clicked.connect(self._cancel_scan)
         self.recon_btn.clicked.connect(self._start_reconstruction)
         self.cancel_recon_btn.clicked.connect(self._cancel_recon)
+        self.resubtract_btn.clicked.connect(self._start_resubtract)
         self.export_btn.clicked.connect(
             lambda: ExportDialog(self, current_scan=self.scan_selector.currentData()).exec()
         )
@@ -4446,6 +4543,9 @@ class MainWindow(QMainWindow):
         path = self.scan_selector.currentData()
         self.recon_btn.setEnabled(
             path is not None and self._mode == "idle")
+        self.resubtract_btn.setEnabled(
+            path is not None and self._mode == "idle"
+            and (path / "pre").is_dir() and (path / "post").is_dir())
         if path is None:
             return
         cfg_path = path / DEPTH_DOSE_DIRNAME / RECON_CONFIG_JSON
@@ -4548,6 +4648,56 @@ class MainWindow(QMainWindow):
         self._log(f"{'✓' if ok else '✗'} {msg}")
         if not ok and "abort" not in msg.lower() and "cancel" not in msg.lower():
             QMessageBox.critical(self, "Reconstruction error", msg)
+
+    def _start_resubtract(self):
+        """Redo the ΔA subtraction for the selected scan from its saved images."""
+        scan_dir = self.scan_selector.currentData()
+        if scan_dir is None:
+            QMessageBox.warning(self, "Recompute ΔA", "No scan selected.")
+            return
+        enc = read_subtracted_encoding(scan_dir / "subtracted")
+        made_by = (f"\n\nThe existing ones were made by app version "
+                   f"{enc['app_version']}." if enc.get("app_version") else "")
+        if QMessageBox.question(
+                self, "Recompute ΔA",
+                f"Redo the subtraction for {scan_dir.name} using its saved "
+                f"pre- and post-irradiation images?\n\n"
+                f"Nothing is re-captured. The existing ΔA projections are "
+                f"replaced, and the scan needs reconstructing again afterwards "
+                f"with \"Force new volume\" ticked.{made_by}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes) != QMessageBox.StandardButton.Yes:
+            return
+
+        self._mode = "resubtracting"
+        self.recon_btn.setEnabled(False)
+        self.resubtract_btn.setEnabled(False)
+        self.start_stop_btn.setEnabled(False)
+        self.recon_progress.setValue(0)
+
+        self._thread = QThread()
+        self._worker = ResubtractWorker(scan_dir)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.progress.connect(self.recon_progress.setValue)
+        self._worker.log.connect(self._log)
+        self._worker.alert.connect(self._on_worker_alert)
+        self._worker.finished.connect(self._resubtract_finished)
+        self._worker.finished.connect(self._thread.quit)
+        self._thread.start()
+
+    def _resubtract_finished(self, ok: bool, msg: str):
+        self._mode = "idle"
+        self.start_stop_btn.setEnabled(True)
+        if not ok:
+            self.recon_progress.setValue(0)
+        self._on_scan_selected()
+        self._log(f"{'✓' if ok else '✗'} {msg}")
+        if ok:
+            self.force_vol_cb.setChecked(True)   # the cached volume is now stale
+            QMessageBox.information(self, "Recompute ΔA", msg)
+        else:
+            QMessageBox.critical(self, "Recompute ΔA", msg)
 
     # ── Startup mode ──────────────────────────────────────────────────────────
 
