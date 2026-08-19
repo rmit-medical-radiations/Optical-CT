@@ -38,9 +38,9 @@ Next steps, in order:
 6. Check the two rotation thresholds against real scans (see the calibration
    note below). One real scan has now exercised the separation gate, where it
    correctly refused at 1.9 sigma; the accept side is still synthetic only.
-7. Decide what to do about the vial wall when the dosimeter sits at a different
-   eccentricity between sessions. Nothing in the current pipeline makes it
-   cancel, and it is the dominant artefact on `scan_20260702_101800`.
+7. Add an elongation gate to the beam plausibility check. Width alone now
+   passes an elongated 9.7 x 6.4 mm smear on `scan_20260702_101800` that is
+   plainly not a beam.
 
 ### Known open problem: pre/post registration
 
@@ -72,6 +72,39 @@ What remains uncorrected:
   second reconstruction.
 
 ## Decisions
+
+### 2026-08-19: mask each projection to the gel
+
+ΔA is zero by construction outside the dosimeter and inside the glass, so the
+only place it can be non-zero is the gel between the walls. Anything measured
+elsewhere is misregistration residual, and the vial wall is the sharpest,
+highest-contrast edge in the frame. On `scan_20260702_101800` that residual
+reached +/-1.08 OD against a gel signal of about 0.1, and no rotation
+correction can remove it when the dosimeter sat at a different distance from
+the axis in each session.
+
+Setting those columns to zero is a support constraint, not cosmetic smoothing.
+Measured on that scan: the reconstructed wall ring fell 55x (0.00330 to
+0.00006) while the gel interior was unchanged (0.00028 to 0.00027).
+
+**It changed the dose verdict**, which is why it was worth doing rather than
+being merely tidy. Over the guarded sample region the centroid moved from
+16.2 mm off axis with a 33.4 mm-wide region (rejected) to 6.0 mm off axis with
+an 8.3 mm-wide region (accepted). The two reconstructions differ inside the gel
+by 13% of the gel signal.
+
+**But that region is still not a beam**, and the plausibility check now passes
+it. Looking closer: principal widths 9.7 x 6.4 mm, elongation 1.51, spanning
+1.5 to 11.8 mm from the axis, and its depth profile peaks at the shallowest
+depth analysed and declines from there with no plateau or peak. A width test
+alone cannot tell a compact beam from an elongated smear of the right size. An
+elongation test is the obvious next gate and is **not yet implemented**.
+
+The wall-contrast cutoff for detection was set at 0.75 of the backlit field on
+intuition and rejected 15 of 180 real pre frames whose wall columns were
+perfectly sensible; measured contrast runs 0.57 to 0.75, so it is now 0.90.
+Detection is 360/360 on this scan, and a synthetic blank frame is still
+rejected.
 
 ### 2026-08-19: first real post-scan through the new pipeline
 

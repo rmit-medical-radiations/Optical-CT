@@ -192,6 +192,20 @@ DOSE_EDGE_GUARD_FRAC = 0.08
 # lifted it so far that 77.5% of a real depth dose clipped to exactly zero.
 DOSE_BASELINE_PERCENTILE = 10.0
 
+# ΔA is zero by construction outside the dosimeter and inside the glass, so
+# those columns are masked out of each projection before reconstruction.  inset
+# is how far inside the detected wall the gel is taken to start, taper softens
+# the boundary so the retained signal is not cut at a hard edge.
+WALL_MASK_INSET_PX = 12
+WALL_MASK_TAPER_PX = 6
+MASK_WALLS = True
+# A wall must be at least this much darker than the backlit field to count as
+# found, which is only meant to reject a frame with no dosimeter in it.
+# Measured wall contrast on a real scan ran 0.57 to 0.75 of the field, so a
+# tighter cutoff rejects real walls: 0.75 threw out 15 of 180 pre frames whose
+# wall columns were perfectly sensible.
+WALL_MIN_CONTRAST = 0.90
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Palette – dark industrial
@@ -601,6 +615,65 @@ def scan_display_label(scan_dir) -> str:
     if meta.get("post_scan_date"):
         parts.append(f"post {_short_date(meta['post_scan_date'])}")
     return f"{scan_dir.name}  ({', '.join(parts)})" if parts else scan_dir.name
+
+
+def find_vial_walls(counts, row_lo=0.30, row_hi=0.70, margin=0.15):
+    """
+    Columns of the two vial walls in one projection.
+
+    The walls are the darkest sustained features in the frame, one either side
+    of the axis.  The outer `margin` of columns is excluded because the dark
+    frame borders are darker still.
+
+    Returns (left, right) columns, or None if either side has no clear wall.
+    """
+    a = np.asarray(counts, dtype=np.float32)
+    h, w = a.shape
+    prof = a[int(h * row_lo):int(h * row_hi)].mean(axis=0)
+    lo, hi = int(w * margin), int(w * (1.0 - margin))
+    mid = (lo + hi) // 2
+    if mid - lo < 8 or hi - mid < 8:
+        return None
+    left = int(np.argmin(prof[lo:mid])) + lo
+    right = int(np.argmin(prof[mid:hi])) + mid
+    # A wall has to actually be dark relative to the backlit field, or we have
+    # locked onto noise in an empty frame.
+    backlit = float(np.median(prof[lo:hi]))
+    if backlit <= 0 or min(prof[left], prof[right]) > WALL_MIN_CONTRAST * backlit:
+        return None
+    return left, right
+
+
+def gel_support_mask(width, walls_pre, walls_post,
+                     inset_px=WALL_MASK_INSET_PX, taper_px=WALL_MASK_TAPER_PX):
+    """
+    Per-column weight keeping only rays that pass through gel.
+
+    ΔA is zero by construction outside the dosimeter (those rays miss it) and in
+    the glass itself (glass does not darken), so the only place it can be
+    non-zero is the gel between the walls.  Anything measured elsewhere is
+    misregistration residual, and the vial wall is the sharpest, highest
+    contrast edge in the frame, so that residual dominates the reconstruction.
+    Setting those columns to their known-true value of zero removes it without
+    inventing anything: this is a support constraint, not cosmetic smoothing.
+
+    The kept region spans both scans' walls, since they need not agree, and is
+    tapered so the retained gel signal is not cut off at a hard edge.
+    """
+    keep = np.zeros(int(width), dtype=np.float32)
+    bounds = [w for w in (walls_pre, walls_post) if w is not None]
+    if not bounds:
+        return None
+    left = max(w[0] for w in bounds) + inset_px
+    right = min(w[1] for w in bounds) - inset_px
+    if right - left < 4 * max(1, taper_px):
+        return None
+    keep[left:right] = 1.0
+    if taper_px > 0:
+        ramp = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, taper_px + 2)[1:-1]))
+        keep[left:left + taper_px] = ramp
+        keep[right - taper_px:right] = ramp[::-1]
+    return keep
 
 
 def projection_profiles(img_dir, row_lo=0.30, row_hi=0.70, margin=0.15):
@@ -2445,7 +2518,8 @@ class ScanWorker(QObject):
 
     def _compute_subtracted(self, pre_dir: Path, post_dir: Path, subtracted_dir: Path,
                              flat: np.ndarray, progress_cb=None,
-                             angle_offset_deg: float = 0.0):
+                             angle_offset_deg: float = 0.0,
+                             mask_walls: bool = MASK_WALLS):
         """
         Compute ΔA = A_post − A_pre in the OD domain and save as uint16 PNG.
 
@@ -2500,6 +2574,8 @@ class ScanWorker(QObject):
 
         n = len(angles)
         masked_total = 0
+        no_walls = 0
+        centres_pre, centres_post = [], []
         for i, angle in enumerate(angles):
             pf, qf = pre_by_angle[angle], post_by_angle[_target(angle)]
             pre_img  = imread_counts(pf)
@@ -2514,6 +2590,23 @@ class ScanWorker(QObject):
             A_post = -np.log(np.clip(post_img, MIN_VALID_COUNTS, None) / flat_f)
             delta_A = np.where(valid, A_post - A_pre, 0.0)
 
+            # Keep only the rays that pass through gel.  Everywhere else ΔA is
+            # zero by construction, so whatever was measured there is
+            # misregistration residual, and at the vial wall that residual is
+            # the largest signal in the frame.
+            if mask_walls:
+                wp = find_vial_walls(pre_img)
+                wq = find_vial_walls(post_img)
+                if wp is not None:
+                    centres_pre.append(0.5 * (wp[0] + wp[1]))
+                if wq is not None:
+                    centres_post.append(0.5 * (wq[0] + wq[1]))
+                keep = gel_support_mask(delta_A.shape[1], wp, wq)
+                if keep is None:
+                    no_walls += 1
+                else:
+                    delta_A = delta_A * keep[None, :]
+
             out = np.clip((delta_A + OD_OFFSET) * OD_SCALE_V2,
                           0, 65535).astype(np.uint16)
             cv2.imwrite(str(subtracted_dir / f"img_{i:04d}_{angle:03d}_deg.png"), out)
@@ -2525,7 +2618,44 @@ class ScanWorker(QObject):
                       f"as below {MIN_VALID_COUNTS:g} counts.")
         if pct > 5.0:
             self.log.emit("⚠ Large masked fraction — check lamp brightness and exposure.")
+        if mask_walls:
+            self._report_wall_masking(n, no_walls, centres_pre, centres_post,
+                                      pre_dir.parent)
         write_subtracted_encoding(subtracted_dir)
+
+    def _report_wall_masking(self, n, no_walls, centres_pre, centres_post, scan_dir):
+        """Log what the wall mask did, and how differently the vial was seated."""
+        if no_walls:
+            self.log.emit(f"⚠ Vial walls not found in {no_walls} of {n} projections; "
+                          f"those were left unmasked.")
+        else:
+            self.log.emit(f"Masked everything outside the gel in all {n} projections.")
+
+        # The swing of the wall centre over a rotation is the vial's orbit about
+        # the axis.  A rotation changes that swing's phase, never its size, so
+        # when the two differ no rotation can align the scans, which is worth
+        # saying plainly next to the rotation check that will have failed.
+        stats = {}
+        for name, c in (("pre", centres_pre), ("post", centres_post)):
+            if len(c) >= 8:
+                arr = np.asarray(c, dtype=float)
+                stats[name] = {"orbit_mm": float((arr.max() - arr.min()) / 2
+                                                 * MM_PER_PIXEL_XZ),
+                               "centre_px": float(arr.mean())}
+        if len(stats) == 2:
+            a, b = stats["pre"]["orbit_mm"], stats["post"]["orbit_mm"]
+            self.log.emit(f"Vial sat {a:.2f} mm off the rotation axis for the "
+                          f"pre-irradiation scan and {b:.2f} mm for the post scan.")
+            if abs(a - b) > 0.3:
+                self.log.emit("⚠ The dosimeter was seated at a different distance "
+                              "from the axis in the two sessions. No rotation can "
+                              "line those up, so the wall would not have cancelled; "
+                              "masking it is what keeps it out of the reconstruction.")
+            try:
+                (Path(scan_dir) / "vial_seating.json").write_text(
+                    json.dumps(stats, indent=2))
+            except OSError:
+                pass
 
     @staticmethod
     def _index_by_angle(img_dir: Path) -> dict:
