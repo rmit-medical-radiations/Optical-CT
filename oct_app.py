@@ -202,6 +202,11 @@ RADIAL_BACKGROUND_BIN_PX = 5.0
 # better but leaves more background behind.
 RADIAL_SMOOTH_BEAM_FACTOR = 1.5
 
+# Depth over which the dose profile is median filtered before use.  Dose cannot
+# vary over a single 0.1 mm slice, so this only removes single-slice spikes from
+# specks or clipped projections, which would otherwise set the normalisation.
+DOSE_DEPTH_MEDIAN_MM = 0.5
+
 # The dosimeter is a solid urethane cylinder dyed throughout, so unlike a
 # liquid in a container there is no inert wall: material right up to the edge
 # can darken.  What sits at the edge instead is an optical artefact, from
@@ -1150,6 +1155,17 @@ def dose_profile_from_volume(mu_vol, mm_per_pixel_xz, depth_y=None,
     rel = od / (float(np.max(od)) + 1e-12)
     return pos_mm, rel, od
 
+def median_filter_1d(values, window):
+    """Median filter along a 1-D profile, with the ends held rather than tapered."""
+    v = np.asarray(values, dtype=np.float64)
+    w = int(window)
+    w = max(1, w + (w + 1) % 2)
+    if w <= 1 or v.size < w:
+        return v
+    pad = np.pad(v, w // 2, mode="edge")
+    return np.array([np.median(pad[i:i + w]) for i in range(v.size)])
+
+
 def radial_bin_index(shape, bin_px=RADIAL_BACKGROUND_BIN_PX):
     """Radius-bin index for every pixel of an XZ slice, plus the number of bins."""
     Z, X = shape
@@ -1435,12 +1451,44 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     xL, xR = max(0, xc - r), min(X, xc + r + 1)
     od_depth = np.array([_flatten(plane)[zL:zR, xL:xR].mean()
                          for plane in sample], dtype=np.float64)
+
+    # Guard against a single bad slice, from a speck or a clipped projection,
+    # setting the normalisation for the whole curve.  Dose cannot change over
+    # one 0.1 mm slice, so a short median removes those without touching
+    # anything physical: features a millimetre or more wide pass through
+    # untouched.
+    od_depth = median_filter_1d(od_depth,
+                                max(3, int(round(DOSE_DEPTH_MEDIAN_MM
+                                                 / float(mm_per_slice_y)))))
     pct = (100.0 - baseline_percentile) if invert else baseline_percentile
     baseline = float(np.percentile(od_depth, pct))
     dose = baseline - od_depth if invert else od_depth - baseline
     dose = np.maximum(dose, 0)
     rel = dose / (np.max(dose) + 1e-12)
     depth_mm = np.arange(len(od_depth)) * mm_per_slice_y
+
+    # How much of the curve the peak occupies.  Everything is normalised to the
+    # maximum, so a narrow feature there sets the scale for the whole profile
+    # and flattens the broad component beneath it.  That is right if the feature
+    # is dose and wrong if it is an inclusion or a bubble, and the app cannot
+    # tell which, so it measures the width and lets the reader judge.
+    peak = float(np.max(dose))
+    pk = int(np.argmax(dose))
+    width = 0
+    if peak > 0:
+        # The contiguous run about the peak, not every slice above half maximum:
+        # a broad shoulder elsewhere in the profile also clears that level and
+        # would make a narrow peak measure wide.
+        half = 0.5 * peak
+        lo = pk
+        while lo > 0 and dose[lo - 1] >= half:
+            lo -= 1
+        hi = pk
+        while hi < len(dose) - 1 and dose[hi + 1] >= half:
+            hi += 1
+        width = hi - lo + 1
+    beam_info["peak_depth_mm"] = float(depth_mm[pk])
+    beam_info["peak_width_mm"] = float(width * mm_per_slice_y)
     return depth_mm, rel, dose, od_depth, (zc, xc), beam_info
 
 def find_axis_from_nozzle(img: np.ndarray) -> Optional[float]:
@@ -3058,6 +3106,17 @@ class ReconWorker(QObject):
                 f"{beam_info['elongation']:.1f}:1 "
                 f"(beam recorded as {beam_diameter_mm:g} mm)"
             )
+            if beam_info.get("peak_width_mm") is not None:
+                self.log.emit(
+                    f"Depth dose peaks at {beam_info['peak_depth_mm']:.1f} mm, "
+                    f"{beam_info['peak_width_mm']:.1f} mm wide at half maximum.")
+                if 0 < beam_info["peak_width_mm"] < 2.0:
+                    self.log.emit(
+                        "⚠ That peak is narrow, and everything is scaled to it, "
+                        "so the broader dose beneath it is flattened. A feature "
+                        "this size can be an inclusion or a bubble rather than "
+                        "dose; check the sagittal panel of the sanity check "
+                        "before reading the curve.")
             if beam_info["near_axis"]:
                 self.log.emit(
                     "⚠ The irradiated region sits on the rotation axis, where it "
@@ -3303,6 +3362,8 @@ class ReconWorker(QObject):
                 "irradiated_elongation": round(beam_info["elongation"], 2),
                 "irradiated_region_fills_dosimeter": beam_info["fills_dosimeter"],
                 "irradiated_region_near_axis": beam_info["near_axis"],
+                "peak_depth_mm": round(beam_info.get("peak_depth_mm", 0.0), 2),
+                "peak_width_mm": round(beam_info.get("peak_width_mm", 0.0), 2),
             }
             (Path(depth_dose_dir) / RECON_CONFIG_JSON).write_text(
                 json.dumps(recon_cfg, indent=2))

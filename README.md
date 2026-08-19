@@ -185,6 +185,8 @@ The width and elongation of the region found are **reported, not judged**.  Earl
 
 The one size claim the app still makes is independent of any beam figure: a region spanning more than `DOSE_REGION_FILLS_FRACTION` of the dosimeter's own width is the dosimeter, so nothing localised was found.  The width is measured from the spread of the weight about its centroid, not from its area.  Area only gives a width if the region is a single blob, and on a real scan it was not: 4479 scattered pixels read as 7.2 mm by area while actually spanning 41 mm of dosimeter.  The comparison is by diameter rather than area for the same reason, since a 3x area margin quietly allows a 1.7x wider region.
 
+The depth profile is median filtered over `DOSE_DEPTH_MEDIAN_MM` first, so a single bad slice cannot set the normalisation for the whole curve; anything a millimetre or wider passes through untouched.  The width of the peak is then measured as the contiguous run above half maximum and reported, because everything is scaled to the maximum: a narrow feature there sets the scale and flattens the broad component beneath it, and whether such a feature is dose or an inclusion is not something the app can decide.
+
 The depth dose baseline is a low percentile of the profile (`DOSE_BASELINE_PERCENTILE`), not the mean of the end slices.  With an edge artefact inside that averaging window the baseline came out so high that 77.5 % of a real depth dose clipped to exactly zero, which reads as an absence of dose rather than as clipping.
 
 The centroid offset is stored in `depth-dose/recon_config.json` as `dose_centroid_x_mm` and `dose_centroid_z_mm`:

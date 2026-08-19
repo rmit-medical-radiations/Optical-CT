@@ -79,6 +79,42 @@ What remains uncorrected:
 
 ## Decisions
 
+### 2026-08-19: the pipeline runs clean, and the curve peaks on something narrow
+
+Re-subtracted and reconstructed `scan_20260702_101800` end to end with the
+current code (app 1.0.309). Everything behaves:
+
+| | before re-subtraction | after |
+|---|---|---|
+| irradiated region | 38.52 mm | **9.47 mm** |
+| elongation | 2.88:1 | **1.42:1** |
+| off axis | 14.8 mm | 8.9 mm |
+
+`encoding.json` records `edge_masked: true`, `dosimeter_seating.json` records
+the 1.28 mm and 0.38 mm sweeps, and the rotation check declined again at 1.9
+sigma with a 0.0 degree correction applied. Reproduced exactly from the saved
+volume, so the analysis path is deterministic.
+
+**The depth dose peaks at 37.9 mm on a feature 0.9 mm wide at half maximum.**
+Everything is normalised to the maximum, so that narrow peak sets the scale and
+flattens the broad component beneath it, which otherwise runs about 0.6 from the
+surface out to 25 mm before falling away. Whether the narrow feature is dose or
+an inclusion the app cannot tell, so it now measures the peak's width and says
+so rather than choosing for the reader.
+
+**A correction to an earlier reading in this log.** I first called that peak a
+single-slice spike and added a median filter along depth to remove it. It is
+not: sampling the spreadsheet every 2 mm made a 0.9 mm feature look isolated,
+where the underlying slices run smoothly 0.31, 0.41, 0.54, 0.68, 0.87, 0.96,
+1.00, 0.98, 0.86, 0.70, 0.56. The median filter stays as a safeguard against
+genuine single-slice artefacts, since it leaves anything a millimetre or wider
+untouched, but the justification written with it was wrong.
+
+The width measure needed correcting too. Counting every slice above half maximum
+included the broad shoulder and reported 16 mm for a 0.9 mm peak; it now
+measures the contiguous run about the maximum. Checked against a synthetic
+exponential falloff, which correctly measures 12.8 mm and is not flagged.
+
 ### 2026-08-19: a stale subtracted/ reconstructs silently and badly
 
 A real run of the new code (app 1.0.306) on `scan_20260702_101800` reported a
