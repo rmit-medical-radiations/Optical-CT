@@ -104,6 +104,7 @@ _BUILTIN_DEFAULTS = {
     "crop_extent":  700,
     "sample_top":   0,
     "sample_height": 450,
+    "beam_diameter_mm": 10.0,
     "step_deg":     2,
     "oct_stack":    3,
     "calib_stack":  3,
@@ -167,25 +168,17 @@ RECON_CONFIG_JSON    = "recon_config.json"
 # radius of the column averaged for depth dose and per-slice profiles
 DOSE_ROI_RADIUS_PX = 10
 
-# Upper bound on the beam diameter, used to size the area the dose-centroid
-# search keeps.  The working assumption has always been 1 cm and the operator
-# reports it is smaller than that, so 10 mm stays the bound.  Over-stating it is
-# the safe direction: a larger assumed beam keeps more pixels, so real beam can
-# never be thresholded away.  Make this a UI setting if beam sizes ever vary.
+# Default beam diameter in mm, recorded with each reconstruction so the measured
+# region can be compared against what was actually delivered.  It is set per
+# scan in the Reconstruction panel, because it is a property of the experiment
+# rather than of the rig.  Nothing is gated on it: the app reports the measured
+# size alongside it and leaves the comparison to the reader, after the standing
+# figure of 1 cm turned out not to be reliable.
 BEAM_DIAMETER_MM = 10.0
-# How much wider than BEAM_DIAMETER_MM the region found may be before it is
-# reported as implausible.  The half-maximum region of a beam is its FWHM, so it
-# should come out no wider than the beam itself; this is margin for penumbra.
-# Expressed as a diameter, not an area: a 3x area margin allowed 1.7x the
-# diameter, which passed a 13.5 mm cupping artefact as a beam on a real scan.
-DOSE_CENTROID_DIAMETER_MARGIN = 1.25
-
-# How far from round the region found may be before it is reported as
-# implausible.  The beam is specified by a diameter, so it should be round:
-# synthetic beams measure 1.00 to 1.01, and the measure recovers true shape
-# faithfully (a 1.4:1 ellipse reads 1.40).  1.5 allows a beam half again as long
-# as it is wide, which is generous for something described by one number.
-DOSE_CENTROID_MAX_ELONGATION = 1.5
+# Fraction of the dosimeter's own width at which the region found is reported as
+# being the dosimeter rather than something inside it.  This is the one size
+# claim that does not rest on knowing how wide the beam is.
+DOSE_REGION_FILLS_FRACTION = 0.6
 
 # Fraction of the sample region excluded at each end when looking for the
 # brightest slices.  The end faces of the dosimeter throw strong reconstruction
@@ -198,6 +191,10 @@ DOSE_EDGE_GUARD_FRAC = 0.08
 # first and last slices instead put an edge artefact inside the baseline, which
 # lifted it so far that 77.5% of a real depth dose clipped to exactly zero.
 DOSE_BASELINE_PERCENTILE = 10.0
+
+# Width of the radius bins used to estimate the rotationally symmetric
+# background that is removed before the beam is located.
+RADIAL_BACKGROUND_BIN_PX = 5.0
 
 # The dosimeter is a solid urethane cylinder dyed throughout, so unlike a
 # liquid in a container there is no inert wall: material right up to the edge
@@ -1131,6 +1128,39 @@ def dose_profile_from_volume(mu_vol, mm_per_pixel_xz, depth_y=None,
     rel = od / (float(np.max(od)) + 1e-12)
     return pos_mm, rel, od
 
+def radial_bin_index(shape, bin_px=RADIAL_BACKGROUND_BIN_PX):
+    """Radius-bin index for every pixel of an XZ slice, plus the number of bins."""
+    Z, X = shape
+    zz, xx = np.ogrid[0:Z, 0:X]
+    r = np.hypot(zz - (Z - 1) / 2.0, xx - (X - 1) / 2.0)
+    idx = (r / float(bin_px)).astype(np.int32)
+    return idx, int(idx.max()) + 1
+
+
+def subtract_radial_background(plane, bin_index, n_bins, mask=None):
+    """
+    Remove the azimuthally averaged radial profile from an XZ slice.
+
+    Whatever affects the dosimeter as a whole, ageing of the dye between
+    sessions above all, darkens it roughly uniformly and reconstructs as a
+    smooth dome about the rotation axis.  On a real scan seven weeks apart that
+    background was several times the beam signal and every attempt to locate the
+    beam measured it instead.  Because it is a function of radius alone it
+    subtracts cleanly, and what is left is whatever is *not* rotationally
+    symmetric: which is what a beam off the axis is.
+
+    A beam centred exactly on the axis would be removed along with the
+    background.  That is the price of this being a one-parameter model, and it
+    is worth paying while a centred beam remains the less likely case.
+    """
+    sel = np.ones(plane.shape, dtype=bool) if mask is None else mask
+    idx = bin_index[sel]
+    sums = np.bincount(idx, weights=plane[sel].astype(np.float64), minlength=n_bins)
+    counts = np.bincount(idx, minlength=n_bins)
+    profile = sums / np.maximum(counts, 1)
+    return plane - profile[bin_index].astype(plane.dtype)
+
+
 def find_dose_centroid(dose_map, mm_per_pixel_xz,
                        beam_diameter_mm=BEAM_DIAMETER_MM):
     """
@@ -1152,23 +1182,29 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     The peak is read at the 99.9th percentile rather than the maximum so that a
     single hot pixel, from a bubble or a clipped projection, cannot define it.
 
-    Returns (zc, xc, diameter_mm, elongation, plausible).  diameter_mm is how
-    wide the region found actually is, measured from the spread of the weight
-    about its centroid, and elongation is the ratio of its principal widths.
-    plausible is False when the region is wider than a beam of beam_diameter_mm
-    could be, or is not round, either of which means something other than the
-    beam was picked up.
+    Returns (zc, xc, diameter_mm, elongation, fills_dosimeter).  diameter_mm is
+    how wide the region found actually is, measured from the spread of the
+    weight about its centroid, and elongation is the ratio of its principal
+    widths.  fills_dosimeter is True when the region is so large it must be the
+    dosimeter rather than anything inside it.
+    Size and shape are reported, not judged.  Earlier versions compared the width
+    against an assumed beam diameter and warned when it did not match, but that
+    reference figure turned out to be unreliable, and a gate is only as good as
+    the number behind it: a real beam wider than the assumed one would have been
+    flagged as an artefact.  The one thing still worth asserting is independent
+    of any beam spec: a region approaching the size of the dosimeter itself
+    cannot be a beam, whatever the beam is.
 
-    Each of those had to be got right in turn: an area margin of 3x quietly
-    allowed a 1.7x wider region; a width inferred from area reads a scatter of
-    pixels spread over the whole dosimeter as a small compact blob; and width alone
-    accepts an elongated smear of about the right width.
+    Getting the measures right took several attempts.  An area margin of 3x
+    quietly allowed a 1.7x wider region; a width inferred from area reads a
+    scatter of pixels spread over the whole dosimeter as a small compact blob;
+    and width alone does not distinguish a beam from an elongated smear.
     """
     interior = dosimeter_interior_mask(dose_map, mm_per_pixel_xz)
     inside = dose_map[interior]
     if inside.size == 0:
         Z, X = dose_map.shape
-        return Z // 2, X // 2, 0.0, float("inf"), False
+        return Z // 2, X // 2, 0.0, float("inf"), True
 
     base = float(np.median(inside))
     peak = float(np.percentile(inside, 99.9))
@@ -1178,7 +1214,7 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     total = weights.sum()
     Z, X = dose_map.shape
     if total <= 0:
-        return Z // 2, X // 2, 0.0, float("inf"), False
+        return Z // 2, X // 2, 0.0, float("inf"), True
 
     zf = float((weights.sum(axis=1) * np.arange(Z)).sum() / total)
     xf = float((weights.sum(axis=0) * np.arange(X)).sum() / total)
@@ -1200,11 +1236,10 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     diameter_mm = float(2.0 * np.sqrt(2.0 * (szz + sxx)) * mm_per_pixel_xz)
 
     # Shape as well as size.  Width alone cannot tell a compact beam from an
-    # elongated smear of about the right width, which is exactly what a real
-    # scan produced once the wall was masked out of it.  The beam is specified
-    # by a diameter, so it should be round: synthetic beams measure 1.00 to 1.01
-    # here, and the ratio recovers true shape accurately (a 1.4:1 ellipse reads
-    # 1.40), so anything past DOSE_CENTROID_MAX_ELONGATION is not beam-shaped.
+    # elongated smear of about the right width.  Synthetic round beams measure
+    # 1.00 to 1.01 here and the ratio recovers true shape accurately (a 1.4:1
+    # ellipse reads 1.40), so it is a meaningful number to report even though
+    # nothing is gated on it.
     trace, det = szz + sxx, szz * sxx - szx * szx
     disc = max(trace * trace - 4.0 * det, 0.0)
     lam_max = 0.5 * (trace + np.sqrt(disc))
@@ -1212,10 +1247,12 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     elongation = (float(np.sqrt(lam_max / lam_min)) if lam_min > 1e-12
                   else float("inf"))
 
-    plausible = bool(
-        diameter_mm <= DOSE_CENTROID_DIAMETER_MARGIN * float(beam_diameter_mm)
-        and elongation <= DOSE_CENTROID_MAX_ELONGATION)
-    return zc, xc, diameter_mm, elongation, plausible
+    # The only size claim that does not depend on knowing the beam: a region
+    # spanning most of the dosimeter is the dosimeter, not something within it.
+    zi, xi = np.nonzero(interior)
+    dosimeter_mm = 2.0 * float(np.hypot(zi - zf, xi - xf).max()) * mm_per_pixel_xz
+    fills_dosimeter = bool(diameter_mm >= DOSE_REGION_FILLS_FRACTION * dosimeter_mm)
+    return zc, xc, diameter_mm, elongation, fills_dosimeter
 
 
 def dosimeter_interior_mask(dose_map, mm_per_pixel_xz, wall_margin_mm=1.5):
@@ -1299,20 +1336,37 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     core_scores = slice_scores[core]
     n_peak = max(1, int(len(core_scores) * peak_fraction))
     peak_idx = np.argpartition(core_scores, -n_peak)[-n_peak:] + (core.start or 0)
-    dose_map = sample[peak_idx].mean(axis=0)   # 2-D map in XZ plane
 
-    zc, xc, _diam_mm, _elong, _plausible = find_dose_centroid(
+    # ── remove whatever is rotationally symmetric ──────────────────────────
+    # Ageing of the dye between sessions darkens the whole dosimeter and
+    # reconstructs as a smooth dome about the axis.  Seven weeks of it buried
+    # the beam on a real scan: the region found spanned the dosimeter, and only
+    # once this background was subtracted did a localised column appear, holding
+    # position to 0.8 mm through 48 depth slices.
+    interior = dosimeter_interior_mask(sample[peak_idx].mean(axis=0),
+                                       mm_per_pixel_xz)
+    bin_index, n_bins = radial_bin_index(interior.shape)
+
+    def _flatten(plane):
+        return subtract_radial_background(plane, bin_index, n_bins, interior)
+
+    dose_map = _flatten(sample[peak_idx].mean(axis=0))   # 2-D map in XZ plane
+
+    zc, xc, _diam_mm, _elong, _fills = find_dose_centroid(
         dose_map, mm_per_pixel_xz, beam_diameter_mm)
     beam_info = {"diameter_mm": _diam_mm, "elongation": _elong,
-                 "plausible": _plausible}
+                 "fills_dosimeter": _fills}
     zc = int(np.clip(zc, roi_radius_px, Z - roi_radius_px - 1))
     xc = int(np.clip(xc, roi_radius_px, X - roi_radius_px - 1))
 
     # ── extract depth profile through the detected centroid ────────────────
+    # Slice by slice, against the same background, so the profile measures the
+    # localised excess rather than how the whole dosimeter darkened.
     r = int(roi_radius_px)
     zL, zR = max(0, zc - r), min(Z, zc + r + 1)
     xL, xR = max(0, xc - r), min(X, xc + r + 1)
-    od_depth = mu_vol[y0:y1, zL:zR, xL:xR].mean(axis=(1, 2))
+    od_depth = np.array([_flatten(plane)[zL:zR, xL:xR].mean()
+                         for plane in sample], dtype=np.float64)
     pct = (100.0 - baseline_percentile) if invert else baseline_percentile
     baseline = float(np.percentile(od_depth, pct))
     dose = baseline - od_depth if invert else od_depth - baseline
@@ -2740,6 +2794,7 @@ class ReconWorker(QObject):
             crop_extent    = cfg["crop_extent"]
             sample_top     = cfg["sample_top"]
             sample_height  = cfg["sample_height"]
+            beam_diameter_mm = float(cfg.get("beam_diameter_mm", BEAM_DIAMETER_MM))
             force_new_vol  = cfg["force_new_vol"]
 
             for d in (reconstruct_dir, dose_dir, depth_dose_dir):
@@ -2821,20 +2876,17 @@ class ReconWorker(QObject):
                 f"Dose centroid: Z={_zc}px ({_offset_z:+.1f} mm), "
                 f"X={_xc}px ({_offset_x:+.1f} mm) from axis; "
                 f"irradiated region {beam_info['diameter_mm']:.1f} mm across, "
-                f"{beam_info['elongation']:.1f}:1"
+                f"{beam_info['elongation']:.1f}:1 "
+                f"(beam recorded as {beam_diameter_mm:g} mm)"
             )
-            if not beam_info["plausible"]:
-                # Wider than a BEAM_DIAMETER_MM beam, or not round.  Either way
-                # the centroid has locked onto an artefact and every dose number
-                # below it is measured in the wrong place.
-                why = ("wider than" if beam_info["diameter_mm"] >
-                       DOSE_CENTROID_DIAMETER_MARGIN * BEAM_DIAMETER_MM
-                       else "less round than")
+            if beam_info["fills_dosimeter"]:
+                # Independent of any beam figure: a region this size is the
+                # dosimeter, so the centroid is not on anything within it and
+                # every dose number below is measured in the wrong place.
                 self.log.emit(
-                    f"⚠ That is {why} the {BEAM_DIAMETER_MM:g} mm beam should be "
-                    f"— the dose centroid has probably found a reconstruction "
-                    f"artefact rather than the beam, so treat the depth dose "
-                    f"and the per-slice profiles with suspicion.")
+                    "⚠ That region spans most of the dosimeter, so the dose "
+                    "centroid has not found anything localised. Treat the depth "
+                    "dose and the per-slice profiles with suspicion.")
             smoothed        = np.array(ema(rel_dose,    alpha=0.1))
             smoothed_signal = np.array(ema(dose_signal, alpha=0.1))
             self.dose_ready.emit(depth_mm, smoothed, smoothed_signal)
@@ -3061,9 +3113,10 @@ class ReconWorker(QObject):
                 "dose_centroid_x_mm":  round(_offset_x, 3),
                 # Size of the region the centroid was taken over.  If this is
                 # not beam-sized, the dose numbers describe an artefact.
+                "beam_diameter_mm": beam_diameter_mm,
                 "irradiated_diameter_mm": round(beam_info["diameter_mm"], 2),
                 "irradiated_elongation": round(beam_info["elongation"], 2),
-                "irradiated_region_is_beam_like": beam_info["plausible"],
+                "irradiated_region_fills_dosimeter": beam_info["fills_dosimeter"],
             }
             (Path(depth_dose_dir) / RECON_CONFIG_JSON).write_text(
                 json.dumps(recon_cfg, indent=2))
@@ -3767,12 +3820,27 @@ class MainWindow(QMainWindow):
         self.sample_h_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         rg.addWidget(self.sample_h_spin, 5, 1)
 
-        self.force_vol_cb = QCheckBox("Force new volume")
-        rg.addWidget(self.force_vol_cb, 6, 0, 1, 2)
+        # Recorded with the reconstruction so the measured irradiated region can
+        # be compared against what was delivered.  Nothing is gated on it.
+        rg.addWidget(QLabel("Beam diameter (mm):"), 6, 0)
+        self.beam_dia_spin = QDoubleSpinBox()
+        self.beam_dia_spin.setRange(0.1, 200.0)
+        self.beam_dia_spin.setSingleStep(0.5)
+        self.beam_dia_spin.setDecimals(1)
+        self.beam_dia_spin.setValue(float(_d.get("beam_diameter_mm", BEAM_DIAMETER_MM)))
+        self.beam_dia_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.beam_dia_spin.setToolTip(
+            "Diameter of the beam delivered to this dosimeter.\n"
+            "Recorded with the reconstruction for comparison; it does not\n"
+            "change how the beam is located.")
+        rg.addWidget(self.beam_dia_spin, 6, 1)
 
-        rg.addWidget(QLabel("Recon progress:"), 7, 0)
+        self.force_vol_cb = QCheckBox("Force new volume")
+        rg.addWidget(self.force_vol_cb, 7, 0, 1, 2)
+
+        rg.addWidget(QLabel("Recon progress:"), 8, 0)
         self.recon_progress = QProgressBar()
-        rg.addWidget(self.recon_progress, 7, 1)
+        rg.addWidget(self.recon_progress, 8, 1)
 
         recon_btn_row = QHBoxLayout()
         self.recon_btn = QPushButton("▶  RUN RECONSTRUCTION")
@@ -4298,6 +4366,8 @@ class MainWindow(QMainWindow):
             if "crop_extent"  in cfg: self.crop_extent_spin.setValue(cfg["crop_extent"])
             if "sample_top"   in cfg: self.sample_top_spin.setValue(cfg["sample_top"])
             if "sample_height" in cfg: self.sample_h_spin.setValue(cfg["sample_height"])
+            if "beam_diameter_mm" in cfg:
+                self.beam_dia_spin.setValue(float(cfg["beam_diameter_mm"]))
             self._updating_overlays = False
             self._on_crop_spinbox_changed()
             self._on_sample_spinbox_changed()
@@ -4346,6 +4416,7 @@ class MainWindow(QMainWindow):
             crop_extent    = self.crop_extent_spin.value(),
             sample_top     = self.sample_top_spin.value(),
             sample_height  = self.sample_h_spin.value(),
+            beam_diameter_mm = self.beam_dia_spin.value(),
             force_new_vol  = self.force_vol_cb.isChecked(),
         )
 
@@ -4417,6 +4488,7 @@ class MainWindow(QMainWindow):
             "crop_extent":   self.crop_extent_spin.value(),
             "sample_top":    self.sample_top_spin.value(),
             "sample_height": self.sample_h_spin.value(),
+            "beam_diameter_mm": self.beam_dia_spin.value(),
             "step_deg":      self.step_spin.value(),
             "oct_stack":     self.oct_stack_spin.value(),
             "calib_stack":   self.calib_stack_spin.value(),

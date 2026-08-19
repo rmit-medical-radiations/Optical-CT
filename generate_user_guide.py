@@ -366,6 +366,10 @@ params = [
                                      'sample region, used for depth dose extraction.'),
     ('Sample height (px)',  '450',   'Number of rows of the dosimeter included in the '
                                      'depth dose ROI.'),
+    ('Beam diameter (mm)',  '10.0',  'Diameter of the beam delivered to this dosimeter.  '
+                                     'Recorded with the reconstruction so the measured '
+                                     'irradiated region can be compared against it.  It '
+                                     'does not change how the beam is located.'),
 ]
 for p in params:
     pdf.param_row(*p)
@@ -555,11 +559,13 @@ pdf.step(4, 'Review the depth dose plot.',
          'Hover the cursor over the plot to read off interpolated values.')
 pdf.step(5, 'The dose centroid is detected automatically.',
          'The app finds the brightest 20 % of slices in the sample ROI, excludes the '
-         'dosimeter edge, and computes the weighted centroid of everything above half the '
-         'peak dose.  It locates beams of a few mm upwards, on or off axis.  If the '
-         'irradiated region it finds is far larger than the beam could be, the status '
-         'panel warns that the centroid has probably found a reconstruction artefact '
-         'instead, and the depth dose should not be relied on.  '
+         'dosimeter edge, removes whatever is evenly spread about the rotation axis, and '
+         'computes the weighted centroid of what is left.  Removing the even part matters: '
+         'a dosimeter darkens all over as it ages, and on a scan taken seven weeks after '
+         'its pre-scan that overall darkening was several times larger than the beam and '
+         'hid it completely.  The status panel reports how wide the region found is and '
+         'how round, next to the beam diameter you entered, and warns only if the region '
+         'spans most of the dosimeter, which means nothing localised was found.  '
          'The centroid offset is logged to the status '
          'panel and recorded in recon_config.json as dose_centroid_x_mm and '
          'dose_centroid_z_mm.  '

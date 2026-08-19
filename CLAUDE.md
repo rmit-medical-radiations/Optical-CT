@@ -14,22 +14,26 @@ in, tested against synthetic data, but **not yet validated on real hardware**.
 
 Next steps, in order:
 
-1. **Check the squareness of the dosimeter base and the mount seat.** Mechanical,
-   not software, and the single thing most likely to make the next scan work.
-   See the tilt finding of 2026-08-19.
-2. Deploy the updated `camera_server.py` to the Pi and confirm
+1. **Keep the pre-to-post interval short.** Seven weeks of dye ageing produced a
+   uniform darkening several times the beam signal on `scan_20260702_101800`.
+   It is now subtracted, but that also removes any axis-centred dose, so it is
+   far better not to have it.
+2. **Check the squareness of the dosimeter base and the mount seat.** Mechanical,
+   not software. Worth doing for scan quality, though note it did not turn out
+   to be what hid the dose. See the tilt finding of 2026-08-19.
+3. Deploy the updated `camera_server.py` to the Pi and confirm
    `/capture?depth=16` returns a 16-bit PNG. The app falls back to 8-bit
    silently if the server is not updated, so this is easy to miss.
-3. Re-run the subtraction on any scan that still has `pre/` and `post/`. That
+4. Re-run the subtraction on any scan that still has `pre/` and `post/`. That
    gets the current signed encoding, the rotation correction, the edge masking
    and a recorded post-scan date. Scans where only `subtracted/` survives can
    still be reconstructed, but stay on whatever encoding they were written with.
-4. Force a new attenuation volume when reconstructing anything scanned before
+5. Force a new attenuation volume when reconstructing anything scanned before
    2026-08-17. Cached `attenuation_volume.npy` files are stale, and legacy
    scans now decode 256x larger than they used to (correctly, see below).
-5. Re-run the sanity check on `scan_20260701_101800` and see how much of the
+6. Re-run the sanity check on `scan_20260701_101800` and see how much of the
    edge ring survives.
-6. Get a real Δφ for `scan_20260701_101800` by re-running the subtraction on its
+7. Get a real Δφ for `scan_20260701_101800` by re-running the subtraction on its
    existing `pre/` and `post/` folders. The measurement and correction now run
    automatically, so this also repairs that scan. Check `rotation_offset.json`
    afterwards, above all `match_separation_sigma`: that scan had bubbles in the
@@ -38,7 +42,7 @@ Next steps, in order:
    bubbles that stayed put, correcting the rotation should make them cancel and
    they should largely disappear. If they persist, they changed between
    sessions and no rotation correction can remove them.
-7. Check the two rotation thresholds against real scans (see the calibration
+8. Check the two rotation thresholds against real scans (see the calibration
    note below). One real scan has now exercised the separation gate, where it
    correctly refused at 1.9 sigma; the accept side is still synthetic only.
 
@@ -73,6 +77,62 @@ What remains uncorrected:
   second reconstruction.
 
 ## Decisions
+
+### 2026-08-19: the beam was under a rotationally symmetric background
+
+Asked whether the depth dose could be recovered from `scan_20260702_101800`.
+It can, probably, and the reason it was hidden is not what anything above
+suggested.
+
+**There is real signal.** ΔA measures +0.0039 OD in air, so lamp drift between
+sessions is only 0.4%, against **+0.0976 OD through the dosimeter**. It darkened
+by about 0.094 OD net.
+
+**Almost all of it is rotationally symmetric.** The reconstruction falls
+smoothly from 0.00067 at the centre to 0.00008 at the edge with no depth
+structure at all, and its magnitude matches spreading 0.094 OD through 44 mm
+(0.00020 predicted, 0.00026 measured). Seven weeks between pre and post scans is
+ample for the dye to age all over, and that is what every attempt to locate the
+beam had been measuring.
+
+**Under it there is a beam.** Subtracting the azimuthally averaged radial
+profile leaves a localised excess that holds position across all 48 depth
+slices: 0.8 mm RMS scatter, where a random location in a 44 mm dosimeter would
+scatter about 10 mm. Its amplitude declines smoothly with depth.
+
+Confirmed independently in the projection domain, with no reconstruction
+involved: the ΔA centroid traces a clean off-axis sinusoid, fit residual 1.5 px.
+The fitted amplitude of 6.06 mm is a lower bound on the feature's radius, since
+the centroid mixes it with the centred background.
+
+A further argument that it is dose: ΔA shows only what *changed*. A casting
+inclusion, a bubble, any static inhomogeneity cancels. Something had to darken
+in one place, at a fixed position through the full depth, between July and
+August. The alternative I cannot exclude from one scan is a region that aged
+differently from its surroundings.
+
+**What did not help.** Registering the tilt improved edge alignment from 11.05
+to 0.38 px RMS and changed the dose result not at all. Edge masking helped but
+was not sufficient. Worth knowing before attributing future failures to either.
+
+Now in the pipeline: the radial background is removed before the centroid search
+*and* before the depth profile is extracted, slice by slice against the same
+background. On the real volume the region found went from spanning 33 to 40 mm
+with the depth peak pinned at the shallowest slice, to 8.9 mm at 1.17:1 and
+8.7 mm off axis, with the depth dose falling from 0.54 to 0.09 across the
+dosimeter.
+
+**Beam size is reported, not gated.** The standing figure of 1 cm turned out to
+be unreliable, and both plausibility gates rested on it: a real beam wider than
+assumed would have been flagged as an artefact. They were advisory, so no result
+was ever corrupted, but the warning could have led someone to discard a good
+scan. Beam diameter is now entered per scan and recorded for comparison. The one
+size claim still made is independent of it: a region spanning most of the
+dosimeter is the dosimeter.
+
+**Shorten the pre-to-post interval.** Seven weeks of ageing produced a uniform
+signal several times the beam. Nothing in software makes that free; subtracting
+it also removes any genuinely axis-centred dose.
 
 ### 2026-08-19: the dosimeter is tilted, not laterally offset
 
