@@ -79,6 +79,38 @@ What remains uncorrected:
 
 ## Decisions
 
+### 2026-08-19: the 37.9 mm peak is an inclusion, and the panel could not show it
+
+Reported that nothing was visible at 38 mm in the sagittal view. Both halves of
+that turned out to be worth chasing.
+
+**The panel could not have shown it.** The sanity check drew the raw volume with
+its display range set by the 1st to 99th percentile of the whole slice, which
+for that slice runs -0.000188 to 0.000856. The feature sits at 0.001159, i.e.
+129% of the display range, saturated white along with the dosimeter edges and
+end faces. The panels also showed the raw volume while the dose is measured on
+the background-subtracted one, so the picture and the number came from different
+domains. Both fixed: the axial and sagittal panels now show the background-
+subtracted planes the dose is read from, scaled to the dosimeter interior, with
+the peak depth marked.
+
+**But the feature is not dose.** Rendered zoomed and unsaturated it is a compact
+blob about 1 mm across, and it is not alone. A census of the background-
+subtracted volume finds **59 speck-sized bright spots** above 6 sigma, median
+0.54 mm across, spread through the full depth (3 to 44 mm) and out to 12 mm from
+the axis. The one at 38.0 mm is 0.90 mm across at 8.9 mm off axis, which is
+where the dose ROI sits.
+
+**The ROI averaged them in.** It is about 2 mm across and used a mean, so one
+0.90 mm inclusion inside it became the maximum of the whole curve and everything
+else was normalised down against it. Switching to a median across the ROI, which
+ignores anything covering under half of it, moves the peak from 37.9 mm and
+0.9 mm wide to 7.1 mm and 11.7 mm wide, and the profile becomes a smooth falloff
+from the surface: about 0.9 at 5 to 8 mm, declining to nothing by 40 mm.
+
+This is the outlier rejection first flagged when a similar spike appeared at
+20 mm in the very first sanity check, and left undone then.
+
 ### 2026-08-19: the pipeline runs clean, and the curve peaks on something narrow
 
 Re-subtracted and reconstructed `scan_20260702_101800` end to end with the

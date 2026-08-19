@@ -1449,7 +1449,14 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     r = int(roi_radius_px)
     zL, zR = max(0, zc - r), min(Z, zc + r + 1)
     xL, xR = max(0, xc - r), min(X, xc + r + 1)
-    od_depth = np.array([_flatten(plane)[zL:zR, xL:xR].mean()
+    # Median across the ROI, not mean.  The dosimeter carries small bright
+    # inclusions, 59 of them on a real scan at a median of 0.54 mm, scattered
+    # through its whole depth.  The ROI is only about 2 mm across, so one of
+    # those inside it lifts that slice's mean enough to become the peak of the
+    # whole curve: on that scan a 0.90 mm inclusion at 38 mm depth did exactly
+    # that, and the real falloff was flattened underneath it.  A median ignores
+    # anything covering less than half the ROI, which every inclusion does.
+    od_depth = np.array([np.median(_flatten(plane)[zL:zR, xL:xR])
                          for plane in sample], dtype=np.float64)
 
     # Guard against a single bad slice, from a speck or a clipped projection,
@@ -1489,6 +1496,15 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
         width = hi - lo + 1
     beam_info["peak_depth_mm"] = float(depth_mm[pk])
     beam_info["peak_width_mm"] = float(width * mm_per_slice_y)
+
+    # The same planes the dose was read from, for the sanity check to display.
+    # Showing the raw volume there instead told the operator to look for a
+    # feature in a picture that could not contain it: the dosimeter edges
+    # saturate the display range, and the background this removes is most of
+    # what is left.  Computed here because the per-slice pass already exists.
+    beam_info["sagittal"] = np.stack([_flatten(plane)[:, xc] for plane in sample])
+    beam_info["axial"] = _flatten(sample[pk])
+    beam_info["interior"] = interior
     return depth_mm, rel, dose, od_depth, (zc, xc), beam_info
 
 def find_axis_from_nozzle(img: np.ndarray) -> Optional[float]:
@@ -3200,7 +3216,9 @@ class ReconWorker(QObject):
                     cb = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.02)
                     cb.ax.tick_params(colors=_DIM, labelsize=7)
 
-                def _pct_lim(arr):
+                def _pct_lim(arr, mask=None):
+                    if mask is not None and mask.shape == arr.shape:
+                        arr = arr[mask]
                     lo, hi = np.percentile(arr, (1, 99))
                     return float(lo), float(hi) if hi > lo else float(lo + 1e-12)
 
@@ -3219,13 +3237,24 @@ class ReconWorker(QObject):
                 ax.set_ylabel("Angle (°)",   color=_DIM, fontsize=8)
                 _cbar(fig, im, ax)
 
-                # ── top-right: axial XZ slice at mid-sample depth ──────────
+                # ── top-right: axial XZ slice at the depth of the peak ─────
+                # The background-subtracted plane, the same one the dose was
+                # read from.  Showing the raw volume made the dose invisible:
+                # the dosimeter edge saturates the scale and the background this
+                # removes is most of what remains.
                 ax = axs[0, 1]
-                axial = mu_vol[_y_mid, :, :]   # Z × X
-                _lo, _hi = _pct_lim(axial)
+                _interior = beam_info.get("interior")
+                if beam_info.get("axial") is not None:
+                    axial = beam_info["axial"]
+                    _axial_title = (f"Axial slice, background removed "
+                                    f"(Y={beam_info['peak_depth_mm']:.1f} mm)")
+                else:
+                    axial = mu_vol[_y_mid, :, :]   # Z × X
+                    _axial_title = f"Axial slice (Y={_y_mid}, mid-sample)"
+                _lo, _hi = _pct_lim(axial, _interior)
                 im = ax.imshow(axial, cmap="hot", vmin=max(_lo, 0), vmax=_hi,
                                aspect="equal", origin="upper")
-                _style_ax(ax, f"Axial slice (Y={_y_mid}, mid-sample)")
+                _style_ax(ax, _axial_title)
                 ax.set_xlabel("X (px)", color=_DIM, fontsize=8)
                 ax.set_ylabel("Z (px)", color=_DIM, fontsize=8)
                 # draw dose ROI circle at detected centroid; cross-hair at geometric axis
@@ -3240,8 +3269,16 @@ class ReconWorker(QObject):
 
                 # ── bottom-left: sagittal YZ slice through dose centroid X ──
                 ax = axs[1, 0]
-                sagittal = mu_vol[:, :, _sc_xc]    # Y × Z at centroid X
-                _lo, _hi = _pct_lim(sagittal)
+                if beam_info.get("sagittal") is not None:
+                    sagittal = beam_info["sagittal"]        # Y × Z, background removed
+                    _sag_note = ", background removed"
+                else:
+                    sagittal = mu_vol[:, :, _sc_xc]         # Y × Z at centroid X
+                    _sag_note = ""
+                # Scale from the dosimeter's own depth range, not the whole
+                # column, so the end faces do not set the display limits.
+                _sag_rows = slice(int(sample_top), int(sample_top + sample_height))
+                _lo, _hi = _pct_lim(sagittal[_sag_rows])
                 # lateral axis origin is the dose centroid, not the geometric axis
                 _ext = [
                     -_sc_zc * MM_PER_PIXEL_XZ,
@@ -3250,7 +3287,7 @@ class ReconWorker(QObject):
                 ]
                 im = ax.imshow(sagittal, cmap="hot", vmin=max(_lo, 0), vmax=_hi,
                                aspect="auto", extent=_ext, origin="upper")
-                _style_ax(ax, f"Sagittal slice (X={_sc_xc}px, centroid)")
+                _style_ax(ax, f"Sagittal slice (X={_sc_xc}px, centroid{_sag_note})")
                 ax.set_xlabel("Lateral Z (mm)", color=_DIM, fontsize=8)
                 ax.set_ylabel("Depth Y (mm)",   color=_DIM, fontsize=8)
                 # mark sample ROI
@@ -3269,6 +3306,14 @@ class ReconWorker(QObject):
                 # mark the depth that feeds the sinogram panel
                 _sino_mm = _sino_row * MM_PER_SLICE_Y
                 ax.axhline(_sino_mm, color="white", linewidth=0.8, linestyle=":", alpha=0.7)
+                # and the depth the dose peaks at, which is what to look at
+                if beam_info.get("peak_depth_mm") is not None:
+                    _pk_mm = sample_top * MM_PER_SLICE_Y + beam_info["peak_depth_mm"]
+                    ax.axhline(_pk_mm, color="#ff9f43", linewidth=1.0, alpha=0.9)
+                    ax.annotate(f"peak {beam_info['peak_width_mm']:.1f} mm wide",
+                                xy=(ax.get_xlim()[1], _pk_mm), xytext=(-4, 3),
+                                textcoords="offset points", ha="right",
+                                color="#ff9f43", fontsize=7)
                 _cbar(fig, im, ax)
 
                 # ── bottom-right: depth dose ───────────────────────────────
