@@ -6,7 +6,7 @@ instructions live in `optical_ct_user_guide.pdf`.
 
 ## Current status / next steps
 
-As at 2026-08-17.
+As at 2026-08-19.
 
 The projection pipeline was reworked after the sanity check for
 `scan_20260701_101800` came out wrong (see "2026-08-17" below). The changes are
@@ -17,9 +17,10 @@ Next steps, in order:
 1. Deploy the updated `camera_server.py` to the Pi and confirm
    `/capture?depth=16` returns a 16-bit PNG. The app falls back to 8-bit
    silently if the server is not updated, so this is easy to miss.
-2. Re-run the subtraction on any scan that still has `pre/` and `post/`, to get
-   the signed v2 encoding. Scans where only `subtracted/` survives can still be
-   reconstructed, but stay on the legacy unsigned encoding.
+2. Re-run the subtraction on any scan that still has `pre/` and `post/`. That
+   gets the current signed encoding, the rotation correction, and a recorded
+   post-scan date. Scans where only `subtracted/` survives can still be
+   reconstructed, but stay on whatever encoding they were written with.
 3. Force a new attenuation volume when reconstructing anything scanned before
    2026-08-17. Cached `attenuation_volume.npy` files are stale, and legacy
    scans now decode 256x larger than they used to (correctly, see below).
@@ -39,11 +40,10 @@ Next steps, in order:
 
 ### Known open problem: pre/post registration
 
-There is still **no correction** for how the dosimeter sits in the holder
-between sessions. It is removed, irradiated elsewhere over days, and reseated,
-and any translation or rotation offset is uncorrected. A sub-pixel offset at the
-vial wall (the highest-contrast edge in the frame) leaves a bipolar residual
-that survives the subtraction and drives the streak artefacts.
+The dosimeter is removed, irradiated elsewhere over days, and reseated, and how
+it goes back matters: a sub-pixel offset at the vial wall (the highest-contrast
+edge in the frame) leaves a bipolar residual that survives the subtraction and
+drives the streak artefacts.
 
 As of 2026-08-17 the **rotational** component is measured and corrected
 automatically (see below).
@@ -67,6 +67,35 @@ What remains uncorrected:
   second reconstruction.
 
 ## Decisions
+
+### 2026-08-19: one scan, one name, both dates
+
+Asked whether the Reconstruction panel should show the post-scan name after a
+post session. It should not, because there is no post-scan name: the post
+session reuses the pre scan's folder (`oct_app.py`, the "post" branch of the
+scan-start handler sets `self._scan_dir = pre_scan_dir` and takes its name).
+One dosimeter measurement is one folder holding `pre/`, `post/` and
+`subtracted/`. A separate post folder would split the two stacks subtraction has
+to read together, and renaming mid-measurement would orphan `scan_meta.json`.
+The app already selects that scan in the Reconstruction panel when a post scan
+finishes.
+
+The question pointed at something real, though. The folder is named when the pre
+scan is made, so after a post scan weeks later the dropdown shows only the
+folder name, stamped with a date the operator has long forgotten, and the scan
+she has just finished looks like an old one. Both dropdowns now label scans as
+`name  (pre 1 Jul, post 19 Aug)`, with the year appended only when it is not the
+current one. Nothing reads the combo text (everything uses `currentData`), so
+relabelling is safe.
+
+**The post scan date was not recorded anywhere.** `scan_meta.json` had
+`pre_scan_date` and nothing for the post session. For a radiochromic dosimeter
+the interval between irradiation and readout matters, since post-irradiation
+darkening keeps developing, so that interval was unrecoverable once the session
+ended. It is now written as soon as the post rotation completes, before the
+rotation check or subtraction can fail. `update_scan_meta` merges rather than
+overwrites, because the two sessions are days apart and each contributes part of
+the record.
 
 ### 2026-08-18: axis of rotation is measured, not typed
 

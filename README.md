@@ -122,7 +122,8 @@ scans/
     ├── reconstruct/          # FBP volume, crop preview, sanity-check figure
     ├── depth-dose/           # Depth dose plot, Excel table, recon config (includes dose centroid offset)
     ├── dose-profiles/        # Per-slice radial dose profile PNGs + dose_profiles.xlsx
-    └── scan_meta.json        # Acquisition parameters (step size, date, etc.)
+    ├── rotation_offset.json  # Measured pre/post dosimeter rotation and the correction applied
+    └── scan_meta.json        # Acquisition parameters, and the dates of both sessions
 ```
 
 ---

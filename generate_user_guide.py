@@ -737,7 +737,9 @@ export_items = [
     'Raw pre and post projection PNGs',
     'ΔA (subtracted) projection PNGs',
     'Calibration frames (dark.npy and flat.npy captured at scan time)',
-    'scan_meta.json — acquisition parameters (step size, stack depth, date/time)',
+    'scan_meta.json — acquisition parameters (step size, stack depth) plus the date '
+    'and time of both the pre- and post-irradiation sessions, so the interval '
+    'between irradiation and readout stays on record',
     'recon_config.json — reconstruction parameters',
     'Depth dose plot and Excel table',
     'Sanity-check visualisation',

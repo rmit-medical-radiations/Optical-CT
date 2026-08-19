@@ -32,6 +32,7 @@ import re
 import sys
 import json
 import time
+import calendar
 import math
 import shutil
 import socket
@@ -534,6 +535,57 @@ def projection_angles(img_dir, n_expected: int, degree_increment: float) -> np.n
     if len(angles) == n_expected:
         return np.asarray(angles, dtype=np.float32)
     return np.arange(n_expected, dtype=np.float32) * float(degree_increment)
+
+
+SCAN_META_JSON = "scan_meta.json"
+
+
+def read_scan_meta(scan_dir) -> dict:
+    """Acquisition metadata for a scan, or {} if absent or unreadable."""
+    try:
+        return json.loads((Path(scan_dir) / SCAN_META_JSON).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def update_scan_meta(scan_dir, **fields) -> None:
+    """
+    Merge fields into a scan's metadata, preserving what is already there.
+
+    The pre and post sessions each contribute part of the record and are days
+    apart, so this must never overwrite the file wholesale.
+    """
+    meta = read_scan_meta(scan_dir)
+    meta.update(fields)
+    (Path(scan_dir) / SCAN_META_JSON).write_text(json.dumps(meta, indent=2))
+
+
+def _short_date(iso: str) -> str:
+    """'2026-07-01' -> '1 Jul', with the year appended unless it is this one."""
+    try:
+        y, m, d = (int(part) for part in str(iso).split("-"))
+        stamp = f"{d} {calendar.month_abbr[m]}"
+        return stamp if y == time.localtime().tm_year else f"{stamp} {y}"
+    except (ValueError, IndexError, TypeError):
+        return str(iso)
+
+
+def scan_display_label(scan_dir) -> str:
+    """
+    Name a scan for a dropdown, with the dates it was actually captured on.
+
+    The folder is named when the pre scan is made, so after a post scan weeks
+    later the bare folder name is stamped with a date the operator has long
+    forgotten, and the scan she has just finished looks like an old one.
+    Showing both dates makes today's work findable without giving the
+    measurement a second identity.
+    """
+    scan_dir = Path(scan_dir)
+    meta = read_scan_meta(scan_dir)
+    parts = [f"pre {_short_date(meta['pre_scan_date'])}"] if meta.get("pre_scan_date") else []
+    if meta.get("post_scan_date"):
+        parts.append(f"post {_short_date(meta['post_scan_date'])}")
+    return f"{scan_dir.name}  ({', '.join(parts)})" if parts else scan_dir.name
 
 
 def projection_profiles(img_dir, row_lo=0.30, row_hi=0.70, margin=0.15):
@@ -2135,7 +2187,7 @@ class ScanWorker(QObject):
                     "flat_stack":     flat_stack,
                     "settle_ms":      cfg["settle_ms"],
                 }
-                (pre_dir.parent / "scan_meta.json").write_text(json.dumps(meta, indent=2))
+                update_scan_meta(pre_dir.parent, **meta)
                 self.log.emit("✓ Pre-irradiation scan complete — irradiate the dosimeter, "
                               "then return for the post-irradiation session")
                 self.finished.emit(True, "Pre-scan complete — ready for irradiation")
@@ -2158,6 +2210,15 @@ class ScanWorker(QObject):
 
             if self._abort:
                 self.finished.emit(False, "Scan aborted by user"); return
+
+            # Record when the readout happened.  For a radiochromic dosimeter the
+            # interval between irradiation and readout matters, and it is
+            # unrecoverable once the session ends, so write it before anything
+            # further can fail.
+            update_scan_meta(post_dir.parent,
+                             post_scan_date=time.strftime("%Y-%m-%d"),
+                             post_scan_time=time.strftime("%H:%M:%S"),
+                             post_app_version=APP_VERSION)
 
             # ── Check the dosimeter went back in the same orientation ────────
             angle_offset = self._check_rotation_offset(pre_dir, post_dir)
@@ -3583,19 +3644,13 @@ class MainWindow(QMainWindow):
                 reverse=True
             )
             for p in scans:
-                self.pre_scan_combo.addItem(p.name, userData=p)
+                self.pre_scan_combo.addItem(scan_display_label(p), userData=p)
         self.pre_scan_combo.blockSignals(False)
         self._on_pre_scan_selected()   # sync spinbox with current selection
 
     @staticmethod
     def _read_pre_scan_meta(scan_dir: Path) -> dict:
-        meta_path = scan_dir / "scan_meta.json"
-        if meta_path.exists():
-            try:
-                return json.loads(meta_path.read_text())
-            except Exception:
-                pass
-        return {}
+        return read_scan_meta(scan_dir)
 
     def _on_pre_scan_selected(self):
         """When the user picks a pre-scan, auto-populate step degrees from its metadata."""
@@ -3926,7 +3981,7 @@ class MainWindow(QMainWindow):
                  if p.is_dir() and (p / "subtracted").is_dir()]  \
                  if SCANS_DIR.exists() else []
         for p in scans:
-            self.scan_selector.addItem(p.name, userData=p)
+            self.scan_selector.addItem(scan_display_label(p), userData=p)
         if select_path is not None:
             for i in range(self.scan_selector.count()):
                 if self.scan_selector.itemData(i) == select_path:
