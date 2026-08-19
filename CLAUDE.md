@@ -36,7 +36,11 @@ Next steps, in order:
    they should largely disappear. If they persist, they changed between
    sessions and no rotation correction can remove them.
 6. Check the two rotation thresholds against real scans (see the calibration
-   note below). They have only ever been exercised on synthetic data.
+   note below). One real scan has now exercised the separation gate, where it
+   correctly refused at 1.9 sigma; the accept side is still synthetic only.
+7. Decide what to do about the vial wall when the dosimeter sits at a different
+   eccentricity between sessions. Nothing in the current pipeline makes it
+   cancel, and it is the dominant artefact on `scan_20260702_101800`.
 
 ### Known open problem: pre/post registration
 
@@ -48,12 +52,13 @@ drives the streak artefacts.
 As of 2026-08-17 the **rotational** component is measured and corrected
 automatically (see below).
 
-**Rotation about the vertical axis is the only degree of freedom that matters
-here.** The mount fixes the dosimeter in every other respect, so translation and
-tilt are not concerns and are deliberately not corrected. `residual_lateral_px`
-is still measured, but only as a canary for the stage, camera or lamp drifting;
-it is logged for whoever maintains the rig and never raised at the operator, who
-cannot act on it. If the mounting arrangement ever changes, revisit this.
+**Rotation was assumed to be the only degree of freedom that matters here**, on
+the basis that the mount fixes the dosimeter in every other respect. A real scan
+disproved that on 2026-08-19: the dosimeter orbited the axis at 1.3 mm in one
+session and 0.4 mm in the next. Translation is therefore real, is measured as
+`residual_lateral_px`, and is still **not corrected**. It is logged rather than
+raised at the operator, who cannot act on it, and it is the usual explanation
+when no rotation fits.
 
 What remains uncorrected:
 
@@ -67,6 +72,62 @@ What remains uncorrected:
   second reconstruction.
 
 ## Decisions
+
+### 2026-08-19: first real post-scan through the new pipeline
+
+`scan_20260702_101800`: pre captured 1 Jul (8-bit, old code), post captured
+19 Aug (16-bit, updated Pi). Seven weeks apart. The mixed bit depth worked, so
+`counts_from_raw` earns its keep.
+
+**The rotation gate refused, correctly.** `confident: false`, separation 1.9
+sigma against the 2.5 threshold, `match_margin` 0.023 against the 0.108 floor
+seen for correct answers in the sweep. Its best guess was -132 degrees and it
+declined to apply it. First real exercise of that gate and it did the right
+thing rather than applying a wrong correction.
+
+**Why it refused, measured from the projections directly.** Finding the vial
+walls in all 180 frame pairs:
+
+| | pre (1 Jul) | post (19 Aug) |
+|---|---|---|
+| wall centre | 984.1 px | 987.1 px |
+| wall spacing | 470.1 px | 472.2 px (scale 1.004) |
+| centre swing over a rotation | 27.0 px | 8.0 px |
+
+The vial orbited the axis at about 1.3 mm in July and 0.4 mm in August. Spacing
+is unchanged so it is not magnification. **No rotation can map one onto the
+other**, because rotating changes the phase of that swing and never its
+amplitude. So the mount does *not* fix everything but rotation, contrary to
+what was assumed on 2026-08-18, and the wall can never cancel on this pair.
+
+**Three defects this exposed, all now fixed:**
+
+1. The depth dose baseline averaged the first and last 50 slices. The first
+   slice ran 1139% above the column median (meniscus artefact), which sat
+   inside that window, lifted the baseline, and clipped **77.5% of the curve to
+   exactly zero**. That reads as an absence of dose rather than as clipping.
+   Baseline is now a low percentile; the same scan drops to 10.2% zero.
+2. Slice selection took the brightest 20% of slices with no edge guard, so the
+   meniscus won and the "dose" centroid sat on it. With a guard band the peak
+   moves from 0.0 mm depth to 34.8 mm.
+3. The beam plausibility check compared *areas* with a 3x margin, which quietly
+   allows a 1.7x wider region, and inferred width from area. Area only gives a
+   width for a single blob: on this scan the region was 4479 scattered pixels
+   spanning 41 mm of gel, which the area measure read as 7.2 mm and passed as a
+   beam. Width now comes from the spread of the weight about its centroid, and
+   the comparison is by diameter. Synthetic 3, 5, 8 and 10 mm beams still
+   locate within 0.15 mm and pass; this scan now reads 33.9 mm and is rejected.
+
+**No recoverable beam in this scan.** The 99th percentile inside the gel is
+roughly flat with depth, and the brightest region is a scatter across the whole
+interior rather than anything compact. That is a statement about this
+reconstruction, whose dominant signal is the wall residual, not about whether
+the dosimeter holds dose.
+
+**Still open: the wall.** With the eccentricity differing between sessions, no
+rotation or frame re-pairing makes it cancel. Since ΔA in the glass is known to
+be zero, masking a band around the measured wall position in each projection
+before FBP would remove the dominant artefact honestly. Not yet done.
 
 ### 2026-08-19: one scan, one name, both dates
 

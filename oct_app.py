@@ -173,9 +173,24 @@ DOSE_ROI_RADIUS_PX = 10
 # the safe direction: a larger assumed beam keeps more pixels, so real beam can
 # never be thresholded away.  Make this a UI setting if beam sizes ever vary.
 BEAM_DIAMETER_MM = 10.0
-# How many times the beam's own area to keep, leaving room for penumbra and for
-# the beam sitting off-centre.
-DOSE_CENTROID_AREA_MARGIN = 3.0
+# How much wider than BEAM_DIAMETER_MM the region found may be before it is
+# reported as implausible.  The half-maximum region of a beam is its FWHM, so it
+# should come out no wider than the beam itself; this is margin for penumbra.
+# Expressed as a diameter, not an area: a 3x area margin allowed 1.7x the
+# diameter, which passed a 13.5 mm cupping artefact as a beam on a real scan.
+DOSE_CENTROID_DIAMETER_MARGIN = 1.25
+
+# Fraction of the sample region excluded at each end when looking for the
+# brightest slices.  The meniscus and the base of the vial throw strong
+# reconstruction artefacts, and without a guard they simply win: on a real scan
+# the first slice was 1139% above the column median and the "dose" centroid
+# landed on it.
+DOSE_EDGE_GUARD_FRAC = 0.08
+
+# Percentile of the depth profile taken as the undosed baseline.  Averaging the
+# first and last slices instead put an edge artefact inside the baseline, which
+# lifted it so far that 77.5% of a real depth dose clipped to exactly zero.
+DOSE_BASELINE_PERCENTILE = 10.0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -235,11 +250,11 @@ ROTATION_ALERT_DEG = 5.0
 ROTATION_MATCH_MIN_SIGMA = 2.5
 
 # Sideways offset still left after correcting the rotation, in detector pixels,
-# beyond which something is wrong.  The mount fixes the dosimeter in every
-# degree of freedom except rotation about the vertical axis, so the operator
-# cannot cause this: a reading here means the stage, camera or lamp has shifted
-# between sessions.  Logged for whoever maintains the rig, never raised at the
-# operator, who has no way to act on it.
+# beyond which the two scans differ by more than a rotation.  The mount was
+# thought to fix everything but rotation; a real scan disproved that, showing
+# the dosimeter orbiting the axis at 1.3 mm in one session and 0.4 mm in the
+# next.  Logged rather than raised at the operator, who cannot act on it, but it
+# is the usual explanation when no rotation fits.
 ROTATION_MAX_LATERAL_PX = 2.0
 
 
@@ -797,17 +812,24 @@ def estimate_rotation_offset(pre_dir, post_dir, row_lo=0.30, row_hi=0.70,
                      f"(separation {separation:.1f}σ, need "
                      f"{ROTATION_MATCH_MIN_SIGMA:.1f}σ)")
 
-    # Measured but not a gate: the mount rules out a sideways shift, so a
-    # reading here points at the rig rather than at how the dosimeter was
-    # loaded.  Kept because it is a cheap canary for stage or camera drift.
+    # Measured but not a gate.  A real scan showed this is usually the dosimeter
+    # sitting differently in the holder rather than the rig moving: between two
+    # sessions its wall centre swung 27 px over a rotation in one and 8 px in
+    # the other, so it orbited the axis at 1.3 mm and then at 0.4 mm.  No
+    # rotation maps one onto the other, since rotating changes the phase of that
+    # swing and never its amplitude, and that is exactly when the match above
+    # fails.  So this doubles as the explanation for a failed match.
     lateral_rms = None
     if step and shift is not None:
         lateral_rms, _ = residual_lateral_shift(prof_pre, prof_post, shift)
         if lateral_rms > ROTATION_MAX_LATERAL_PX:
-            notes.append(f"the projections sit {lateral_rms:.1f} px sideways of "
-                         f"the pre-irradiation scan even after correcting the "
-                         f"rotation; the mount does not allow that, so check the "
-                         f"stage, camera and lamp alignment")
+            qualifier = ("" if confident else
+                         ", which is most likely why no rotation fits")
+            notes.append(f"at the best-fitting rotation the two scans still sit "
+                         f"{lateral_rms:.1f} px apart sideways{qualifier}; the "
+                         f"dosimeter was seated differently between sessions, or "
+                         f"the stage or camera has moved. Re-pairing frames "
+                         f"cannot correct that")
 
     # Secondary, informational only.  The centroid sinusoid resolves sub-step,
     # but off-axis dose exists only in the post frames and pulls its phase
@@ -1043,15 +1065,19 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     The peak is read at the 99.9th percentile rather than the maximum so that a
     single hot pixel, from a bubble or a clipped projection, cannot define it.
 
-    Returns (zc, xc, area_px, plausible), where plausible is False if the region
-    found is larger than a beam of beam_diameter_mm could be, which means
-    something other than the beam was picked up.
+    Returns (zc, xc, diameter_mm, plausible).  diameter_mm is how wide the
+    region found actually is, measured from the spread of the weight about its
+    centroid; plausible is False when that is wider than a beam of
+    beam_diameter_mm could be, meaning something other than the beam was picked
+    up.  Both the measure and the comparison had to be got right: an area margin
+    of 3x quietly allowed a 1.7x wider region, and a width inferred from area
+    reads a scatter of pixels spread over the whole gel as a small compact blob.
     """
     interior = gel_interior_mask(dose_map, mm_per_pixel_xz)
     inside = dose_map[interior]
     if inside.size == 0:
         Z, X = dose_map.shape
-        return Z // 2, X // 2, 0, False
+        return Z // 2, X // 2, 0.0, False
 
     base = float(np.median(inside))
     peak = float(np.percentile(inside, 99.9))
@@ -1061,15 +1087,24 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     total = weights.sum()
     Z, X = dose_map.shape
     if total <= 0:
-        return Z // 2, X // 2, 0, False
+        return Z // 2, X // 2, 0.0, False
 
-    zc = int(round((weights.sum(axis=1) * np.arange(Z)).sum() / total))
-    xc = int(round((weights.sum(axis=0) * np.arange(X)).sum() / total))
+    zf = float((weights.sum(axis=1) * np.arange(Z)).sum() / total)
+    xf = float((weights.sum(axis=0) * np.arange(X)).sum() / total)
+    zc, xc = int(round(zf)), int(round(xf))
 
-    area_px = int((weights > 0).sum())
-    beam_px = np.pi * (0.5 * float(beam_diameter_mm) / float(mm_per_pixel_xz)) ** 2
-    plausible = bool(area_px <= DOSE_CENTROID_AREA_MARGIN * beam_px)
-    return zc, xc, area_px, plausible
+    # Width from the spread of the weight about its centroid, not from its area.
+    # Area only gives a width if the region is one blob, and on a real scan it
+    # was not: 4479 scattered pixels read as 7.2 mm by area while actually
+    # spanning 41 mm of gel.  For a uniform disc of diameter D the RMS radius is
+    # D/(2*sqrt(2)), which is where the factor below comes from.
+    zs, xs = np.nonzero(weights)
+    wv = weights[zs, xs]
+    var = float((wv * ((zs - zf) ** 2 + (xs - xf) ** 2)).sum() / wv.sum())
+    diameter_mm = float(2.0 * np.sqrt(2.0 * var) * mm_per_pixel_xz)
+    plausible = bool(diameter_mm <=
+                     DOSE_CENTROID_DIAMETER_MARGIN * float(beam_diameter_mm))
+    return zc, xc, diameter_mm, plausible
 
 
 def gel_interior_mask(dose_map, mm_per_pixel_xz, wall_margin_mm=1.5):
@@ -1110,8 +1145,9 @@ def gel_interior_mask(dose_map, mm_per_pixel_xz, wall_margin_mm=1.5):
 
 def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
                                   sample_height_px, roi_radius_px=DOSE_ROI_RADIUS_PX,
-                                  edge_baseline_px=50, invert=False,
-                                  peak_fraction=0.20,
+                                  baseline_percentile=DOSE_BASELINE_PERCENTILE,
+                                  invert=False, peak_fraction=0.20,
+                                  edge_guard_frac=DOSE_EDGE_GUARD_FRAC,
                                   mm_per_pixel_xz=MM_PER_PIXEL_XZ,
                                   beam_diameter_mm=BEAM_DIAMETER_MM):
     """
@@ -1119,9 +1155,20 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     centroid of the dose distribution from the brightest `peak_fraction`
     of depth slices within the sample region.
 
+    The top and bottom of the sample region carry strong reconstruction
+    artefacts from the meniscus and the base of the vial, so a guard band at
+    each end is excluded from the search for peak slices.  On a real scan the
+    first slice ran 1139% above the median of the column, which made the
+    brightest slices the edge ones and put the "dose" centroid on the meniscus.
+
+    The baseline is a low percentile of the depth profile, not the mean of the
+    end slices.  With that same edge artefact inside the averaging window, the
+    mean-of-ends baseline came out so high that 77.5% of the depth dose clipped
+    to exactly zero, which reads as an absence of dose rather than as clipping.
+
     Returns depth_mm, rel_dose, dose_signal, od_depth, (zc, xc), beam_info
     where (zc, xc) is the detected dose centroid in volume pixel coordinates and
-    beam_info carries the centroid's area in pixels and whether it is small
+    beam_info carries the size of the region found and whether it is small
     enough to actually be the beam.
     """
     Y, Z, X = mu_vol.shape
@@ -1134,14 +1181,18 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     # mean of a slice is background, so the mean would rank slices by how much
     # artefact they contain rather than by how much dose.
     slice_scores = np.percentile(sample.reshape(len(sample), -1), 99.0, axis=1)
-    n_peak = max(1, int(len(slice_scores) * peak_fraction))
-    peak_idx = np.argpartition(slice_scores, -n_peak)[-n_peak:]
+    guard = int(len(slice_scores) * float(edge_guard_frac))
+    # Only guard when enough of the profile survives to still be representative.
+    core = (slice(guard, len(slice_scores) - guard)
+            if guard > 0 and len(slice_scores) - 2 * guard >= 10 else slice(None))
+    core_scores = slice_scores[core]
+    n_peak = max(1, int(len(core_scores) * peak_fraction))
+    peak_idx = np.argpartition(core_scores, -n_peak)[-n_peak:] + (core.start or 0)
     dose_map = sample[peak_idx].mean(axis=0)   # 2-D map in XZ plane
 
-    zc, xc, _area, _plausible = find_dose_centroid(
+    zc, xc, _diam_mm, _plausible = find_dose_centroid(
         dose_map, mm_per_pixel_xz, beam_diameter_mm)
-    beam_info = {"area_px": _area, "plausible": _plausible,
-                 "area_mm2": _area * mm_per_pixel_xz ** 2}
+    beam_info = {"diameter_mm": _diam_mm, "plausible": _plausible}
     zc = int(np.clip(zc, roi_radius_px, Z - roi_radius_px - 1))
     xc = int(np.clip(xc, roi_radius_px, X - roi_radius_px - 1))
 
@@ -1150,8 +1201,8 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     zL, zR = max(0, zc - r), min(Z, zc + r + 1)
     xL, xR = max(0, xc - r), min(X, xc + r + 1)
     od_depth = mu_vol[y0:y1, zL:zR, xL:xR].mean(axis=(1, 2))
-    n = min(edge_baseline_px, len(od_depth) // 4)
-    baseline = np.mean(np.concatenate([od_depth[:n], od_depth[-n:]]))
+    pct = (100.0 - baseline_percentile) if invert else baseline_percentile
+    baseline = float(np.percentile(od_depth, pct))
     dose = baseline - od_depth if invert else od_depth - baseline
     dose = np.maximum(dose, 0)
     rel = dose / (np.max(dose) + 1e-12)
@@ -2598,14 +2649,14 @@ class ReconWorker(QObject):
             self.log.emit(
                 f"Dose centroid: Z={_zc}px ({_offset_z:+.1f} mm), "
                 f"X={_xc}px ({_offset_x:+.1f} mm) from axis; "
-                f"irradiated area {beam_info['area_mm2']:.1f} mm²"
+                f"irradiated region {beam_info['diameter_mm']:.1f} mm across"
             )
             if not beam_info["plausible"]:
-                # The region found is too big to be a beam of BEAM_DIAMETER_MM,
-                # so the centroid has locked onto an artefact and every dose
-                # number below it is measured in the wrong place.
+                # The region found is wider than a beam of BEAM_DIAMETER_MM, so
+                # the centroid has locked onto an artefact and every dose number
+                # below it is measured in the wrong place.
                 self.log.emit(
-                    f"⚠ That is far larger than a {BEAM_DIAMETER_MM:g} mm beam — "
+                    f"⚠ That is wider than the {BEAM_DIAMETER_MM:g} mm beam — "
                     f"the dose centroid has probably found a reconstruction "
                     f"artefact rather than the beam, so treat the depth dose "
                     f"and the per-slice profiles with suspicion.")
@@ -2833,6 +2884,10 @@ class ReconWorker(QObject):
                 "dose_centroid_x_px":  int(dose_centroid[1]),
                 "dose_centroid_z_mm":  round(_offset_z, 3),
                 "dose_centroid_x_mm":  round(_offset_x, 3),
+                # Size of the region the centroid was taken over.  If this is
+                # not beam-sized, the dose numbers describe an artefact.
+                "irradiated_diameter_mm": round(beam_info["diameter_mm"], 2),
+                "irradiated_region_is_beam_sized": beam_info["plausible"],
             }
             (Path(depth_dose_dir) / RECON_CONFIG_JSON).write_text(
                 json.dumps(recon_cfg, indent=2))

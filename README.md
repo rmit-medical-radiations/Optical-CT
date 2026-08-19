@@ -163,14 +163,16 @@ Reconstruction uses `skimage.transform.iradon` with a Hann filter.  The volume h
 - Lateral: 43 mm / 454 px ≈ 0.095 mm/px
 - Depth: 0.1 mm/slice
 
-The dose centroid is auto-detected from the brightest 20 % of slices in the sample ROI, ranked by a high percentile rather than the slice mean (with a beam this small the mean of a slice is background, so the mean would rank slices by artefact content).  Locating the beam within that map takes two steps, both needed because the beam is under 2 % of the slice area at 10 mm across on a 66 mm grid:
+The dose centroid is auto-detected from the brightest 20 % of slices in the sample ROI, ranked by a high percentile rather than the slice mean (with a beam this small the mean of a slice is background, so the mean would rank slices by artefact content).  A guard band of `DOSE_EDGE_GUARD_FRAC` is excluded at each end of the sample region first: the meniscus and the base of the vial throw strong artefacts, and without a guard they simply win.  On a real scan the first slice ran 1139 % above the column median, which made the brightest slices the edge ones and put the dose centroid on the meniscus.  Locating the beam within that map takes two steps, both needed because the beam is under 2 % of the slice area at 10 mm across on a 66 mm grid:
 
 1. The vial wall is excluded (`gel_interior_mask`).  Whenever it fails to cancel it is the brightest thing in the slice, and being concentric with the rotation axis its centroid sits dead centre, which drags a whole-slice centroid to the middle however hard the map is thresholded.  No dose is deposited in the glass, so excluding it costs nothing.
 2. The threshold is taken at half the peak above local background, the usual FWHM convention.  Being a contrast ratio rather than an area, it needs no assumption about beam size: it locates a 3 mm beam and a 10 mm one equally well.  The peak is read at the 99.9th percentile, not the maximum, so a single hot pixel cannot define it.
 
 This previously thresholded at the median of the whole slice, which kept half the pixels, so roughly 96 % of the weight came from undosed background and the centroid tracked artefacts rather than the beam.
 
-`BEAM_DIAMETER_MM` (10 mm, an upper bound) is not used to find the beam, only to sanity-check it: if the region found is larger than a beam that size could be, the log says the centroid has probably locked onto an artefact and the depth dose should not be trusted.
+`BEAM_DIAMETER_MM` (10 mm, an upper bound) is not used to find the beam, only to sanity-check it: if the region found is wider than a beam that size could be, the log says the centroid has probably locked onto an artefact and the depth dose should not be trusted.  The width is measured from the spread of the weight about its centroid, not from its area.  Area only gives a width if the region is a single blob, and on a real scan it was not: 4479 scattered pixels read as 7.2 mm by area while actually spanning 41 mm of gel.  The comparison is by diameter rather than area for the same reason, since a 3x area margin quietly allows a 1.7x wider region.
+
+The depth dose baseline is a low percentile of the profile (`DOSE_BASELINE_PERCENTILE`), not the mean of the end slices.  With an edge artefact inside that averaging window the baseline came out so high that 77.5 % of a real depth dose clipped to exactly zero, which reads as an absence of dose rather than as clipping.
 
 The centroid offset is stored in `depth-dose/recon_config.json` as `dose_centroid_x_mm` and `dose_centroid_z_mm`:
 
