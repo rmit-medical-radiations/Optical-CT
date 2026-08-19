@@ -544,11 +544,22 @@ def take_photo_http(stack: int = 3) -> Optional[np.ndarray]:
 ANGLE_RE = re.compile(r"img_(?P<index>\d+)_(?P<angle>\d+)_deg\.png$")
 
 
-def write_subtracted_encoding(subtracted_dir) -> None:
-    """Record how the ΔA PNGs in this directory are encoded."""
+def write_subtracted_encoding(subtracted_dir, **processing) -> None:
+    """
+    Record how the ΔA PNGs in this directory are encoded, and what was done to
+    them.
+
+    The processing fields matter as much as the encoding.  Reconstruction reads
+    whatever is already in subtracted/, so a folder produced by an older version
+    reconstructs silently and badly: on a real scan an unmasked subtraction gave
+    a 40 mm "irradiated region" where the same data masked gave 9 mm, with
+    nothing in the output to say why.
+    """
     meta = {"version": SUBTRACT_ENCODING_VERSION,
             "od_scale": OD_SCALE_V2,
-            "od_offset": OD_OFFSET}
+            "od_offset": OD_OFFSET,
+            "app_version": APP_VERSION}
+    meta.update(processing)
     with open(Path(subtracted_dir) / ENCODING_JSON, "w") as fh:
         json.dump(meta, fh, indent=2)
 
@@ -563,9 +574,14 @@ def read_subtracted_encoding(subtracted_dir) -> dict:
             meta = json.load(fh)
         return {"version": int(meta.get("version", 1)),
                 "od_scale": float(meta.get("od_scale", OD_SCALE)),
-                "od_offset": float(meta.get("od_offset", 0.0))}
+                "od_offset": float(meta.get("od_offset", 0.0)),
+                "edge_masked": bool(meta.get("edge_masked", False)),
+                "rotation_correction_deg": meta.get("rotation_correction_deg"),
+                "app_version": meta.get("app_version")}
     except (OSError, ValueError, TypeError):
-        return {"version": 1, "od_scale": OD_SCALE, "od_offset": 0.0}
+        return {"version": 1, "od_scale": OD_SCALE, "od_offset": 0.0,
+                "edge_masked": False, "rotation_correction_deg": None,
+                "app_version": None}
 
 
 def projection_angles(img_dir, n_expected: int, degree_increment: float) -> np.ndarray:
@@ -1241,10 +1257,10 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     scatter of pixels spread over the whole dosimeter as a small compact blob;
     and width alone does not distinguish a beam from an elongated smear.
     """
+    Z, X = dose_map.shape
     interior = dosimeter_interior_mask(dose_map, mm_per_pixel_xz)
     inside = dose_map[interior]
     if inside.size == 0:
-        Z, X = dose_map.shape
         return Z // 2, X // 2, 0.0, float("inf"), True
 
     base = float(np.median(inside))
@@ -1253,7 +1269,6 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     weights = np.where(interior, np.clip(dose_map - threshold, 0.0, None), 0.0)
 
     total = weights.sum()
-    Z, X = dose_map.shape
     if total <= 0:
         return Z // 2, X // 2, 0.0, float("inf"), True
 
@@ -1290,8 +1305,12 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
 
     # The only size claim that does not depend on knowing the beam: a region
     # spanning most of the dosimeter is the dosimeter, not something within it.
+    # Measured about the dosimeter's own centre.  Measuring it from the beam
+    # centroid inflates it whenever the beam is off centre, which let a 40 mm
+    # region inside a 44 mm dosimeter report as not filling it.
     zi, xi = np.nonzero(interior)
-    dosimeter_mm = 2.0 * float(np.hypot(zi - zf, xi - xf).max()) * mm_per_pixel_xz
+    dosimeter_mm = 2.0 * float(np.hypot(zi - (Z - 1) / 2.0,
+                                        xi - (X - 1) / 2.0).max()) * mm_per_pixel_xz
     fills_dosimeter = bool(diameter_mm >= DOSE_REGION_FILLS_FRACTION * dosimeter_mm)
     return zc, xc, diameter_mm, elongation, fills_dosimeter
 
@@ -2763,7 +2782,10 @@ class ScanWorker(QObject):
         if mask_edges:
             self._report_edge_masking(n, no_edges, centres_pre, centres_post,
                                       pre_dir.parent)
-        write_subtracted_encoding(subtracted_dir)
+        write_subtracted_encoding(
+            subtracted_dir,
+            edge_masked=bool(mask_edges and no_edges < n),
+            rotation_correction_deg=float(angle_offset_deg))
 
     def _report_edge_masking(self, n, no_edges, centres_pre, centres_post, scan_dir):
         """Log what the edge mask did, and how differently the dosimeter sat."""
@@ -2880,6 +2902,21 @@ class ReconWorker(QObject):
                     f"{65535.0 / enc['od_scale'] - enc['od_offset']:+g} OD). "
                     f"Re-run the subtraction for the current v"
                     f"{SUBTRACT_ENCODING_VERSION} range and the rotation check.")
+            if not enc["edge_masked"]:
+                # Reconstruction reads whatever is already in subtracted/, so a
+                # folder written before edge masking existed reconstructs
+                # silently and badly.  On a real scan that turned a 9 mm
+                # irradiated region into a 40 mm one, with nothing in the output
+                # to say why.
+                self.log.emit(
+                    "⚠ These ΔA projections were made before the dosimeter edge "
+                    "was masked out"
+                    + (f" (by app version {enc['app_version']})"
+                       if enc.get("app_version") else "")
+                    + ". The edge artefact will dominate the reconstruction and "
+                      "the irradiated region will come out far too large. "
+                      "Re-run the post-scan subtraction on this scan before "
+                      "trusting anything below.")
             P = imgs / enc["od_scale"] - enc["od_offset"]
 
             # Take angles from the filenames; they are authoritative now that

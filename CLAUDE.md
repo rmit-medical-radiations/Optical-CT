@@ -78,6 +78,36 @@ What remains uncorrected:
 
 ## Decisions
 
+### 2026-08-19: a stale subtracted/ reconstructs silently and badly
+
+A real run of the new code (app 1.0.306) on `scan_20260702_101800` reported a
+38.5 mm irradiated region at 2.88:1, nothing like the 8.8 mm the same data gave
+during development. The cause: `subtracted/` had been written at 15:11, before
+edge masking existed, and the reconstruction at 16:38 simply read it. Nothing in
+the output said so.
+
+Isolated by reconstructing the same scan three ways:
+
+| projections | region | elongation |
+|---|---|---|
+| plain, as the app used | 40.2 mm | 2.92:1 |
+| edge-masked | 9.1 mm | 1.38:1 |
+| edge-masked and tilt-registered | 8.8 mm | 1.35:1 |
+
+**Edge masking is the step that matters**; the tilt registration adds almost
+nothing on top, consistent with the earlier finding. Reconstruction reads
+whatever is in `subtracted/`, so `encoding.json` now records `edge_masked`,
+`rotation_correction_deg` and `app_version`, and the reconstruction warns when
+the projections predate edge masking rather than producing a quietly wrong
+answer.
+
+**Bug found in the same run.** `fills_dosimeter` reported false for that 38.5 mm
+region inside a 44 mm dosimeter. The dosimeter's width was being measured from
+the *beam centroid* rather than from its own centre, which inflates it whenever
+the beam is off centre: here to 74 mm, so 38.5 mm sat under the 60% threshold.
+Measured about the dosimeter's centre it now correctly reports true, which is
+the one warning that should have fired.
+
 ### 2026-08-19: the beam was under a rotationally symmetric background
 
 Asked whether the depth dose could be recovered from `scan_20260702_101800`.
