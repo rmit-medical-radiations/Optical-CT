@@ -1446,9 +1446,6 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     # ── extract depth profile through the detected centroid ────────────────
     # Slice by slice, against the same background, so the profile measures the
     # localised excess rather than how the whole dosimeter darkened.
-    r = int(roi_radius_px)
-    zL, zR = max(0, zc - r), min(Z, zc + r + 1)
-    xL, xR = max(0, xc - r), min(X, xc + r + 1)
     # Median across the ROI, not mean.  The dosimeter carries small bright
     # inclusions, 59 of them on a real scan at a median of 0.54 mm, scattered
     # through its whole depth.  The ROI is only about 2 mm across, so one of
@@ -1456,8 +1453,27 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     # whole curve: on that scan a 0.90 mm inclusion at 38 mm depth did exactly
     # that, and the real falloff was flattened underneath it.  A median ignores
     # anything covering less than half the ROI, which every inclusion does.
-    od_depth = np.array([np.median(_flatten(plane)[zL:zR, xL:xR])
-                         for plane in sample], dtype=np.float64)
+    # Alongside the profile itself, the same profile from four ROIs shifted by
+    # one ROI width.  The depth of the peak turns out to be far less stable than
+    # the shape of the curve: on a real scan the shape held to a correlation of
+    # 0.85 or better under those shifts while the peak moved between 5 and
+    # 27 mm, because the curve has several comparable maxima and which one wins
+    # depends on exactly where the ROI sits.  Reporting the peak depth without
+    # that spread would dress up a number that moves.
+    _r = int(roi_radius_px)
+    _offsets = [(0, 0), (_r, 0), (-_r, 0), (0, _r), (0, -_r)]
+    _boxes = []
+    for _dz, _dx in _offsets:
+        _z0 = int(np.clip(zc + _dz, _r, Z - _r - 1))
+        _x0 = int(np.clip(xc + _dx, _r, X - _r - 1))
+        _boxes.append((slice(_z0 - _r, _z0 + _r + 1), slice(_x0 - _r, _x0 + _r + 1)))
+    _profiles = [[] for _ in _boxes]
+    for plane in sample:
+        _f = _flatten(plane)
+        for _i, (_zs, _xs) in enumerate(_boxes):
+            _profiles[_i].append(np.median(_f[_zs, _xs]))
+    od_depth = np.array(_profiles[0], dtype=np.float64)
+    _neighbours = [np.array(pr, dtype=np.float64) for pr in _profiles[1:]]
 
     # Guard against a single bad slice, from a speck or a clipped projection,
     # setting the normalisation for the whole curve.  Dose cannot change over
@@ -1496,6 +1512,20 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
         width = hi - lo + 1
     beam_info["peak_depth_mm"] = float(depth_mm[pk])
     beam_info["peak_width_mm"] = float(width * mm_per_slice_y)
+
+    # How far the peak moves when the ROI does, and how well the shape holds.
+    _peaks, _corrs = [float(depth_mm[pk])], []
+    for _nb in _neighbours:
+        _n = median_filter_1d(_nb, max(3, int(round(DOSE_DEPTH_MEDIAN_MM
+                                                    / float(mm_per_slice_y)))))
+        _nd = np.maximum(_n - np.percentile(_n, pct), 0)
+        if _nd.max() <= 0:
+            continue
+        _peaks.append(float(depth_mm[int(np.argmax(_nd))]))
+        if dose.std() > 0 and _nd.std() > 0:
+            _corrs.append(float(np.corrcoef(dose, _nd)[0, 1]))
+    beam_info["peak_depth_spread_mm"] = float(max(_peaks) - min(_peaks))
+    beam_info["shape_stability"] = float(np.min(_corrs)) if _corrs else float("nan")
 
     # The same planes the dose was read from, for the sanity check to display.
     # Showing the raw volume there instead told the operator to look for a
@@ -3126,6 +3156,19 @@ class ReconWorker(QObject):
                 self.log.emit(
                     f"Depth dose peaks at {beam_info['peak_depth_mm']:.1f} mm, "
                     f"{beam_info['peak_width_mm']:.1f} mm wide at half maximum.")
+                _spread = beam_info.get("peak_depth_spread_mm")
+                _stab = beam_info.get("shape_stability")
+                if _spread is not None:
+                    self.log.emit(
+                        f"Moving the sampling column by its own width shifts that "
+                        f"peak over {_spread:.1f} mm, while the shape of the curve "
+                        f"holds to {_stab:.2f} correlation.")
+                    if _spread > 3.0:
+                        self.log.emit(
+                            "⚠ Read the shape of the depth dose, not the depth of "
+                            "its peak: the curve has several comparable maxima and "
+                            "which one is highest depends on exactly where the "
+                            "column sits.")
                 if 0 < beam_info["peak_width_mm"] < 2.0:
                     self.log.emit(
                         "⚠ That peak is narrow, and everything is scaled to it, "
@@ -3418,6 +3461,8 @@ class ReconWorker(QObject):
                 "irradiated_region_near_axis": beam_info["near_axis"],
                 "peak_depth_mm": round(beam_info.get("peak_depth_mm", 0.0), 2),
                 "peak_width_mm": round(beam_info.get("peak_width_mm", 0.0), 2),
+                "peak_depth_spread_mm": round(beam_info.get("peak_depth_spread_mm", 0.0), 2),
+                "shape_stability": round(beam_info.get("shape_stability", 0.0), 3),
             }
             (Path(depth_dose_dir) / RECON_CONFIG_JSON).write_text(
                 json.dumps(recon_cfg, indent=2))

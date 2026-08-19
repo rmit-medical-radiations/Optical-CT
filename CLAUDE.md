@@ -79,6 +79,35 @@ What remains uncorrected:
 
 ## Decisions
 
+### 2026-08-19: the depth dose shape is trustworthy, its peak depth is not
+
+Checked how much the depth dose depends on exactly where the sampling column
+sits, by recomputing it with the ROI moved.
+
+| ROI moved by | peak depth | correlation with the centre curve |
+|---|---|---|
+| nothing | 7.1 mm | 1.00 |
+| 1 mm in Z | 14.1 mm | 0.95 |
+| 1 mm in X | 4.9 mm | 0.97 |
+| 2 mm in Z | 14.2 mm | 0.85 |
+| 10 mm, off the beam | 27.1 mm | 0.05 |
+
+So the **shape** is a real property of that location: it survives moving the
+column by twice its own width, and collapses entirely when moved off the beam.
+The **peak depth** is not: it moves between 5 and 27 mm under shifts of 1 to
+2 mm, because the curve has several comparable maxima.
+
+Averaged over the on-beam positions the profile is 0.6 from the surface to about
+9 mm, then declines steadily to nothing by 42 mm, with a per-point spread of
+0.13 to 0.28. The fine structure is at noise level; the broad trend is solid.
+
+The app was reporting `peak_depth_mm` as though it were a measurement. It now
+recomputes the profile from four ROIs shifted by one ROI width, reports the
+spread of the peak depths and the worst shape correlation, and says outright to
+read the shape rather than the peak when the spread exceeds 3 mm. A clean
+synthetic beam gives a spread of 0.1 mm and is not flagged, so the measure
+separates the two cases rather than always complaining.
+
 ### 2026-08-19: sanity check depth axis was stretched (introduced and fixed same day)
 
 Switching the sanity check panels to the background-subtracted volume introduced
