@@ -79,6 +79,20 @@ What remains uncorrected:
 
 ## Decisions
 
+### 2026-08-19: sanity check depth axis was stretched (introduced and fixed same day)
+
+Switching the sanity check panels to the background-subtracted volume introduced
+a bug in the same change. That array covers only the sample region, 450 rows
+here, but the sagittal panel kept plotting it across the full column depth of
+700 rows. Everything in the picture was stretched by 1.56x, so no feature sat at
+its stated depth and nothing lined up with the sample markers or the peak line
+drawn over it.
+
+The extent now follows whichever array is being drawn. Worth noting the class of
+error: substituting a differently shaped array behind an unchanged axis
+definition, which produces a plausible-looking picture rather than an obvious
+failure.
+
 ### 2026-08-19: the 37.9 mm peak is an inclusion, and the panel could not show it
 
 Reported that nothing was visible at 38 mm in the sagittal view. Both halves of

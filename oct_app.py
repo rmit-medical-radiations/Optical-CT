@@ -3270,20 +3270,29 @@ class ReconWorker(QObject):
                 # ── bottom-left: sagittal YZ slice through dose centroid X ──
                 ax = axs[1, 0]
                 if beam_info.get("sagittal") is not None:
+                    # Only the sample region, since that is all the dose pass
+                    # covered.  Its depth extent must say so: plotting it across
+                    # the whole column stretches it, so nothing lines up with
+                    # the sample markers or the peak line drawn over it.
                     sagittal = beam_info["sagittal"]        # Y × Z, background removed
                     _sag_note = ", background removed"
+                    _sag_rows = slice(None)
+                    _sag_top_mm = sample_top * MM_PER_SLICE_Y
+                    _sag_bot_mm = (sample_top + sagittal.shape[0]) * MM_PER_SLICE_Y
                 else:
                     sagittal = mu_vol[:, :, _sc_xc]         # Y × Z at centroid X
                     _sag_note = ""
-                # Scale from the dosimeter's own depth range, not the whole
-                # column, so the end faces do not set the display limits.
-                _sag_rows = slice(int(sample_top), int(sample_top + sample_height))
+                    # Scale from the dosimeter's own depth range, not the whole
+                    # column, so the end faces do not set the display limits.
+                    _sag_rows = slice(int(sample_top), int(sample_top + sample_height))
+                    _sag_top_mm = 0.0
+                    _sag_bot_mm = _Y * MM_PER_SLICE_Y
                 _lo, _hi = _pct_lim(sagittal[_sag_rows])
                 # lateral axis origin is the dose centroid, not the geometric axis
                 _ext = [
                     -_sc_zc * MM_PER_PIXEL_XZ,
                     (_Z - _sc_zc) * MM_PER_PIXEL_XZ,
-                    _Y * MM_PER_SLICE_Y, 0,
+                    _sag_bot_mm, _sag_top_mm,
                 ]
                 im = ax.imshow(sagittal, cmap="hot", vmin=max(_lo, 0), vmax=_hi,
                                aspect="auto", extent=_ext, origin="upper")
