@@ -2993,15 +2993,23 @@ class ReconWorker(QObject):
                 # silently and badly.  On a real scan that turned a 9 mm
                 # irradiated region into a 40 mm one, with nothing in the output
                 # to say why.
-                self.log.emit(
-                    "⚠ These ΔA projections were made before the dosimeter edge "
-                    "was masked out"
-                    + (f" (by app version {enc['app_version']})"
-                       if enc.get("app_version") else "")
-                    + ". The edge artefact will dominate the reconstruction and "
-                      "the irradiated region will come out far too large. "
-                      "Re-run the post-scan subtraction on this scan before "
-                      "trusting anything below.")
+                if enc.get("app_version") is None:
+                    # No processing fields at all: written before masking existed.
+                    self.log.emit(
+                        "⚠ These ΔA projections were made before the dosimeter "
+                        "edge was masked out. The edge artefact will dominate "
+                        "the reconstruction and the irradiated region will come "
+                        "out far too large. Use \"Recompute ΔA from pre/post "
+                        "images\" before trusting anything below.")
+                else:
+                    # Masking ran and found nothing, so re-running will not help.
+                    self.log.emit(
+                        f"⚠ These ΔA projections were made by app version "
+                        f"{enc['app_version']}, which did look for the dosimeter "
+                        f"edge but could not find it in any projection, so "
+                        f"nothing was masked. Recomputing ΔA will not change "
+                        f"that. Check the projections: the dosimeter may be out "
+                        f"of frame, or too faint against the backlight.")
             P = imgs / enc["od_scale"] - enc["od_offset"]
 
             # Take angles from the filenames; they are authoritative now that

@@ -551,11 +551,12 @@ pdf.step(2, 'Verify the crop and sample parameters.',
          'Adjust if needed — changing any crop spinbox will automatically tick '
          '"Force new volume".')
 pdf.note(
-    'If the status panel says the projections were made before the dosimeter edge '
-    'was masked out, click "Recompute ΔA from pre/post images" first.  That redoes '
-    'the subtraction from the images already saved with the scan; nothing is '
-    're-captured, and it takes about half a minute.  Then reconstruct again with '
-    '"Force new volume" ticked, which the app sets for you.'
+    'A scan you have just captured needs nothing extra: the post-irradiation '
+    'session already did the subtraction.  "Recompute ΔA from pre/post images" is '
+    'only for older scans, and the status panel tells you when one needs it.  It '
+    'redoes the subtraction from the images already saved with the scan, so nothing '
+    'is re-captured; it takes about half a minute.  Reconstruct again afterwards '
+    'with "Force new volume" ticked, which the app sets for you.'
 )
 
 pdf.step(3, 'Click "RECONSTRUCT".',
