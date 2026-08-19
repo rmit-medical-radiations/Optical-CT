@@ -38,9 +38,9 @@ Next steps, in order:
 6. Check the two rotation thresholds against real scans (see the calibration
    note below). One real scan has now exercised the separation gate, where it
    correctly refused at 1.9 sigma; the accept side is still synthetic only.
-7. Add an elongation gate to the beam plausibility check. Width alone now
-   passes an elongated 9.7 x 6.4 mm smear on `scan_20260702_101800` that is
-   plainly not a beam.
+7. Check the vial and mount for squareness (see the tilt finding below). This
+   is a mechanical fix, not a software one, and it is the single thing most
+   likely to make the next scan work.
 
 ### Known open problem: pre/post registration
 
@@ -93,12 +93,18 @@ being merely tidy. Over the guarded sample region the centroid moved from
 an 8.3 mm-wide region (accepted). The two reconstructions differ inside the gel
 by 13% of the gel signal.
 
-**But that region is still not a beam**, and the plausibility check now passes
-it. Looking closer: principal widths 9.7 x 6.4 mm, elongation 1.51, spanning
-1.5 to 11.8 mm from the axis, and its depth profile peaks at the shallowest
-depth analysed and declines from there with no plateau or peak. A width test
-alone cannot tell a compact beam from an elongated smear of the right size. An
-elongation test is the obvious next gate and is **not yet implemented**.
+**But that region is still not a beam.** Principal widths 9.7 x 6.4 mm,
+elongation 1.51, spanning 1.5 to 11.8 mm from the axis, and its depth profile
+peaks at the shallowest depth analysed and declines from there with no plateau
+or peak. Width alone cannot tell a compact beam from an elongated smear of the
+right size, so an elongation gate was added: the beam is specified by a
+diameter, synthetic beams measure 1.00 to 1.01, and the measure recovers true
+shape faithfully (a 1.4:1 ellipse reads 1.40). The cutoff is 1.5.
+
+Note this scan fails that gate at 1.51, by a hundredth. The gate is calibrated
+from beam physics rather than tuned to reject this scan, but it is not what
+rules this scan out in any robust sense; the depth behaviour is far more
+damning than the shape.
 
 The wall-contrast cutoff for detection was set at 0.75 of the backlit field on
 intuition and rejected 15 of 180 real pre frames whose wall columns were

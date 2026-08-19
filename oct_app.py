@@ -180,6 +180,13 @@ BEAM_DIAMETER_MM = 10.0
 # diameter, which passed a 13.5 mm cupping artefact as a beam on a real scan.
 DOSE_CENTROID_DIAMETER_MARGIN = 1.25
 
+# How far from round the region found may be before it is reported as
+# implausible.  The beam is specified by a diameter, so it should be round:
+# synthetic beams measure 1.00 to 1.01, and the measure recovers true shape
+# faithfully (a 1.4:1 ellipse reads 1.40).  1.5 allows a beam half again as long
+# as it is wide, which is generous for something described by one number.
+DOSE_CENTROID_MAX_ELONGATION = 1.5
+
 # Fraction of the sample region excluded at each end when looking for the
 # brightest slices.  The meniscus and the base of the vial throw strong
 # reconstruction artefacts, and without a guard they simply win: on a real scan
@@ -1138,19 +1145,23 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     The peak is read at the 99.9th percentile rather than the maximum so that a
     single hot pixel, from a bubble or a clipped projection, cannot define it.
 
-    Returns (zc, xc, diameter_mm, plausible).  diameter_mm is how wide the
-    region found actually is, measured from the spread of the weight about its
-    centroid; plausible is False when that is wider than a beam of
-    beam_diameter_mm could be, meaning something other than the beam was picked
-    up.  Both the measure and the comparison had to be got right: an area margin
-    of 3x quietly allowed a 1.7x wider region, and a width inferred from area
-    reads a scatter of pixels spread over the whole gel as a small compact blob.
+    Returns (zc, xc, diameter_mm, elongation, plausible).  diameter_mm is how
+    wide the region found actually is, measured from the spread of the weight
+    about its centroid, and elongation is the ratio of its principal widths.
+    plausible is False when the region is wider than a beam of beam_diameter_mm
+    could be, or is not round, either of which means something other than the
+    beam was picked up.
+
+    Each of those had to be got right in turn: an area margin of 3x quietly
+    allowed a 1.7x wider region; a width inferred from area reads a scatter of
+    pixels spread over the whole gel as a small compact blob; and width alone
+    accepts an elongated smear of about the right width.
     """
     interior = gel_interior_mask(dose_map, mm_per_pixel_xz)
     inside = dose_map[interior]
     if inside.size == 0:
         Z, X = dose_map.shape
-        return Z // 2, X // 2, 0.0, False
+        return Z // 2, X // 2, 0.0, float("inf"), False
 
     base = float(np.median(inside))
     peak = float(np.percentile(inside, 99.9))
@@ -1160,7 +1171,7 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     total = weights.sum()
     Z, X = dose_map.shape
     if total <= 0:
-        return Z // 2, X // 2, 0.0, False
+        return Z // 2, X // 2, 0.0, float("inf"), False
 
     zf = float((weights.sum(axis=1) * np.arange(Z)).sum() / total)
     xf = float((weights.sum(axis=0) * np.arange(X)).sum() / total)
@@ -1173,11 +1184,31 @@ def find_dose_centroid(dose_map, mm_per_pixel_xz,
     # D/(2*sqrt(2)), which is where the factor below comes from.
     zs, xs = np.nonzero(weights)
     wv = weights[zs, xs]
-    var = float((wv * ((zs - zf) ** 2 + (xs - xf) ** 2)).sum() / wv.sum())
-    diameter_mm = float(2.0 * np.sqrt(2.0 * var) * mm_per_pixel_xz)
-    plausible = bool(diameter_mm <=
-                     DOSE_CENTROID_DIAMETER_MARGIN * float(beam_diameter_mm))
-    return zc, xc, diameter_mm, plausible
+    wsum = wv.sum()
+    dz, dx = zs - zf, xs - xf
+    szz = float((wv * dz * dz).sum() / wsum)
+    sxx = float((wv * dx * dx).sum() / wsum)
+    szx = float((wv * dz * dx).sum() / wsum)
+
+    diameter_mm = float(2.0 * np.sqrt(2.0 * (szz + sxx)) * mm_per_pixel_xz)
+
+    # Shape as well as size.  Width alone cannot tell a compact beam from an
+    # elongated smear of about the right width, which is exactly what a real
+    # scan produced once the wall was masked out of it.  The beam is specified
+    # by a diameter, so it should be round: synthetic beams measure 1.00 to 1.01
+    # here, and the ratio recovers true shape accurately (a 1.4:1 ellipse reads
+    # 1.40), so anything past DOSE_CENTROID_MAX_ELONGATION is not beam-shaped.
+    trace, det = szz + sxx, szz * sxx - szx * szx
+    disc = max(trace * trace - 4.0 * det, 0.0)
+    lam_max = 0.5 * (trace + np.sqrt(disc))
+    lam_min = 0.5 * (trace - np.sqrt(disc))
+    elongation = (float(np.sqrt(lam_max / lam_min)) if lam_min > 1e-12
+                  else float("inf"))
+
+    plausible = bool(
+        diameter_mm <= DOSE_CENTROID_DIAMETER_MARGIN * float(beam_diameter_mm)
+        and elongation <= DOSE_CENTROID_MAX_ELONGATION)
+    return zc, xc, diameter_mm, elongation, plausible
 
 
 def gel_interior_mask(dose_map, mm_per_pixel_xz, wall_margin_mm=1.5):
@@ -1263,9 +1294,10 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     peak_idx = np.argpartition(core_scores, -n_peak)[-n_peak:] + (core.start or 0)
     dose_map = sample[peak_idx].mean(axis=0)   # 2-D map in XZ plane
 
-    zc, xc, _diam_mm, _plausible = find_dose_centroid(
+    zc, xc, _diam_mm, _elong, _plausible = find_dose_centroid(
         dose_map, mm_per_pixel_xz, beam_diameter_mm)
-    beam_info = {"diameter_mm": _diam_mm, "plausible": _plausible}
+    beam_info = {"diameter_mm": _diam_mm, "elongation": _elong,
+                 "plausible": _plausible}
     zc = int(np.clip(zc, roi_radius_px, Z - roi_radius_px - 1))
     xc = int(np.clip(xc, roi_radius_px, X - roi_radius_px - 1))
 
@@ -2779,15 +2811,19 @@ class ReconWorker(QObject):
             self.log.emit(
                 f"Dose centroid: Z={_zc}px ({_offset_z:+.1f} mm), "
                 f"X={_xc}px ({_offset_x:+.1f} mm) from axis; "
-                f"irradiated region {beam_info['diameter_mm']:.1f} mm across"
+                f"irradiated region {beam_info['diameter_mm']:.1f} mm across, "
+                f"{beam_info['elongation']:.1f}:1"
             )
             if not beam_info["plausible"]:
-                # The region found is wider than a beam of BEAM_DIAMETER_MM, so
+                # Wider than a BEAM_DIAMETER_MM beam, or not round.  Either way
                 # the centroid has locked onto an artefact and every dose number
                 # below it is measured in the wrong place.
+                why = ("wider than" if beam_info["diameter_mm"] >
+                       DOSE_CENTROID_DIAMETER_MARGIN * BEAM_DIAMETER_MM
+                       else "less round than")
                 self.log.emit(
-                    f"⚠ That is wider than the {BEAM_DIAMETER_MM:g} mm beam — "
-                    f"the dose centroid has probably found a reconstruction "
+                    f"⚠ That is {why} the {BEAM_DIAMETER_MM:g} mm beam should be "
+                    f"— the dose centroid has probably found a reconstruction "
                     f"artefact rather than the beam, so treat the depth dose "
                     f"and the per-slice profiles with suspicion.")
             smoothed        = np.array(ema(rel_dose,    alpha=0.1))
@@ -3017,7 +3053,8 @@ class ReconWorker(QObject):
                 # Size of the region the centroid was taken over.  If this is
                 # not beam-sized, the dose numbers describe an artefact.
                 "irradiated_diameter_mm": round(beam_info["diameter_mm"], 2),
-                "irradiated_region_is_beam_sized": beam_info["plausible"],
+                "irradiated_elongation": round(beam_info["elongation"], 2),
+                "irradiated_region_is_beam_like": beam_info["plausible"],
             }
             (Path(depth_dose_dir) / RECON_CONFIG_JSON).write_text(
                 json.dumps(recon_cfg, indent=2))
