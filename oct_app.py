@@ -196,6 +196,12 @@ DOSE_BASELINE_PERCENTILE = 10.0
 # background that is removed before the beam is located.
 RADIAL_BACKGROUND_BIN_PX = 5.0
 
+# Width of the radial smoothing window as a multiple of the beam diameter.  The
+# background has to vary more slowly than any beam for the two to be separable
+# at all, so this sets where that line is drawn.  Wider preserves a centred beam
+# better but leaves more background behind.
+RADIAL_SMOOTH_BEAM_FACTOR = 1.5
+
 # The dosimeter is a solid urethane cylinder dyed throughout, so unlike a
 # liquid in a container there is no inert wall: material right up to the edge
 # can darken.  What sits at the edge instead is an optical artefact, from
@@ -1137,28 +1143,63 @@ def radial_bin_index(shape, bin_px=RADIAL_BACKGROUND_BIN_PX):
     return idx, int(idx.max()) + 1
 
 
-def subtract_radial_background(plane, bin_index, n_bins, mask=None):
+def subtract_radial_background(plane, bin_index, n_bins, mask=None,
+                               beam_diameter_mm=BEAM_DIAMETER_MM,
+                               mm_per_pixel_xz=MM_PER_PIXEL_XZ,
+                               bin_px=RADIAL_BACKGROUND_BIN_PX):
     """
-    Remove the azimuthally averaged radial profile from an XZ slice.
+    Remove the slowly varying, rotationally symmetric part of an XZ slice.
 
     Whatever affects the dosimeter as a whole, ageing of the dye between
     sessions above all, darkens it roughly uniformly and reconstructs as a
     smooth dome about the rotation axis.  On a real scan seven weeks apart that
-    background was several times the beam signal and every attempt to locate the
-    beam measured it instead.  Because it is a function of radius alone it
-    subtracts cleanly, and what is left is whatever is *not* rotationally
-    symmetric: which is what a beam off the axis is.
+    background was several times the beam signal, and every attempt to locate
+    the beam measured it instead.
 
-    A beam centred exactly on the axis would be removed along with the
-    background.  That is the price of this being a one-parameter model, and it
-    is worth paying while a centred beam remains the less likely case.
+    Subtracting the plain azimuthal mean would remove it, but would also erase
+    any beam centred on the rotation axis, since such a beam is itself
+    rotationally symmetric and indistinguishable from background by symmetry
+    alone.  Silently deleting a centred irradiation is not acceptable, so the
+    separation is made on **scale** instead, which holds wherever the beam sits:
+    the background varies over the width of the dosimeter, tens of mm, while a
+    beam varies over its own width.  The radial profile is therefore smoothed
+    with a window wider than any beam before being subtracted, so a beam-scale
+    bump survives at any radius including zero.
+
+    The profile is mirrored about r = 0 for the smoothing, since it is an even
+    function of radius, and a median is used so an off-axis beam cannot drag it.
+
+    An on-axis beam is attenuated by roughly a quarter rather than removed, the
+    unavoidable cost of it partly resembling background; off-axis beams come
+    through intact.  Callers should treat a centroid found near the axis as a
+    lower bound on amplitude, and depth_dose_from_central_axis says so.
     """
     sel = np.ones(plane.shape, dtype=bool) if mask is None else mask
     idx = bin_index[sel]
-    sums = np.bincount(idx, weights=plane[sel].astype(np.float64), minlength=n_bins)
-    counts = np.bincount(idx, minlength=n_bins)
-    profile = sums / np.maximum(counts, 1)
-    return plane - profile[bin_index].astype(plane.dtype)
+    vals = plane[sel].astype(np.float64)
+    order = np.argsort(idx, kind="stable")
+    idx_s, vals_s = idx[order], vals[order]
+    edges = np.searchsorted(idx_s, np.arange(n_bins + 1))
+    profile = np.full(n_bins, np.nan)
+    for i in range(n_bins):
+        lo, hi = edges[i], edges[i + 1]
+        if hi > lo:
+            profile[i] = np.median(vals_s[lo:hi])
+    known = ~np.isnan(profile)
+    if known.sum() < 2:
+        return plane - np.nan_to_num(profile)[bin_index].astype(plane.dtype)
+    profile[~known] = np.interp(np.flatnonzero(~known),
+                                np.flatnonzero(known), profile[known])
+
+    # Smooth over a window wider than any beam, so beam-scale structure is left
+    # behind wherever it sits.  Mirrored because the profile is even in r.
+    win = int(round(RADIAL_SMOOTH_BEAM_FACTOR * float(beam_diameter_mm)
+                    / (float(bin_px) * float(mm_per_pixel_xz))))
+    win = max(3, win + (win + 1) % 2)
+    mirrored = np.concatenate([profile[::-1], profile])
+    padded = np.pad(mirrored, win // 2, mode="edge")
+    smooth = np.array([np.median(padded[i:i + win]) for i in range(len(mirrored))])
+    return plane - smooth[n_bins:][bin_index].astype(plane.dtype)
 
 
 def find_dose_centroid(dose_map, mm_per_pixel_xz,
@@ -1348,14 +1389,22 @@ def depth_dose_from_central_axis(mu_vol, mm_per_slice_y, sample_top_px,
     bin_index, n_bins = radial_bin_index(interior.shape)
 
     def _flatten(plane):
-        return subtract_radial_background(plane, bin_index, n_bins, interior)
+        return subtract_radial_background(plane, bin_index, n_bins, interior,
+                                          beam_diameter_mm, mm_per_pixel_xz)
 
     dose_map = _flatten(sample[peak_idx].mean(axis=0))   # 2-D map in XZ plane
 
     zc, xc, _diam_mm, _elong, _fills = find_dose_centroid(
         dose_map, mm_per_pixel_xz, beam_diameter_mm)
+    # A beam sitting on the rotation axis partly resembles the background that
+    # was just removed, so its amplitude comes out low.  Flag it rather than let
+    # the number be read as absolute.
+    _off_axis_mm = float(np.hypot(zc - (Z - 1) / 2.0, xc - (X - 1) / 2.0)
+                         * mm_per_pixel_xz)
     beam_info = {"diameter_mm": _diam_mm, "elongation": _elong,
-                 "fills_dosimeter": _fills}
+                 "fills_dosimeter": _fills,
+                 "off_axis_mm": _off_axis_mm,
+                 "near_axis": bool(_off_axis_mm < 0.5 * float(beam_diameter_mm))}
     zc = int(np.clip(zc, roi_radius_px, Z - roi_radius_px - 1))
     xc = int(np.clip(xc, roi_radius_px, X - roi_radius_px - 1))
 
@@ -2879,6 +2928,12 @@ class ReconWorker(QObject):
                 f"{beam_info['elongation']:.1f}:1 "
                 f"(beam recorded as {beam_diameter_mm:g} mm)"
             )
+            if beam_info["near_axis"]:
+                self.log.emit(
+                    "⚠ The irradiated region sits on the rotation axis, where it "
+                    "partly resembles the overall darkening that is subtracted "
+                    "before it is found. Its depth dose is a lower bound; the "
+                    "shape is reliable, the absolute level is not.")
             if beam_info["fills_dosimeter"]:
                 # Independent of any beam figure: a region this size is the
                 # dosimeter, so the centroid is not on anything within it and
@@ -3117,6 +3172,7 @@ class ReconWorker(QObject):
                 "irradiated_diameter_mm": round(beam_info["diameter_mm"], 2),
                 "irradiated_elongation": round(beam_info["elongation"], 2),
                 "irradiated_region_fills_dosimeter": beam_info["fills_dosimeter"],
+                "irradiated_region_near_axis": beam_info["near_axis"],
             }
             (Path(depth_dose_dir) / RECON_CONFIG_JSON).write_text(
                 json.dumps(recon_cfg, indent=2))

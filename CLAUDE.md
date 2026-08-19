@@ -16,8 +16,8 @@ Next steps, in order:
 
 1. **Keep the pre-to-post interval short.** Seven weeks of dye ageing produced a
    uniform darkening several times the beam signal on `scan_20260702_101800`.
-   It is now subtracted, but that also removes any axis-centred dose, so it is
-   far better not to have it.
+   It is subtracted by scale rather than by symmetry, so an axis-centred beam
+   survives, but a background that is not there cannot bias anything.
 2. **Check the squareness of the dosimeter base and the mount seat.** Mechanical,
    not software. Worth doing for scan quality, though note it did not turn out
    to be what hid the dose. See the tilt finding of 2026-08-19.
@@ -130,9 +130,45 @@ scan. Beam diameter is now entered per scan and recorded for comparison. The one
 size claim still made is independent of it: a region spanning most of the
 dosimeter is the dosimeter.
 
-**Shorten the pre-to-post interval.** Seven weeks of ageing produced a uniform
-signal several times the beam. Nothing in software makes that free; subtracting
-it also removes any genuinely axis-centred dose.
+**The background must be separated by scale, not by symmetry.** The first
+version subtracted the plain azimuthal mean, which removes the background but
+also erases any beam centred on the rotation axis, since such a beam is itself
+rotationally symmetric. Silently deleting a centred irradiation is not
+acceptable: this dosimeter happened to be irradiated off axis, the next may not
+be.
+
+Symmetry cannot separate them, so scale does: the background varies over the
+width of the dosimeter, a beam over its own width. The radial profile is now
+median-smoothed with a window 1.5x the beam diameter before subtraction,
+mirrored about r = 0 since it is even in radius. A beam-scale bump then survives
+at any radius, including zero.
+
+Things tried and rejected on the way, all measured rather than argued:
+
+- Low-order polynomial fits in radius. Unstable near the axis, where the inner
+  bins hold few pixels: order 4 over-subtracted an on-axis beam by 46%, order 6
+  kept only 53% of it.
+- Two-pass source masking, estimating the background with the candidate beam
+  excluded. Standard practice elsewhere, but it cannot bootstrap here: pass one
+  removes an on-axis beam, so pass two has nothing to exclude. Measured 0%
+  survival.
+- Narrow smoothing removes background well but eats a centred beam (22% kept at
+  an 8 mm window); wide smoothing keeps the beam but leaves background behind
+  (813% at 20 mm, meaning the residual is mostly background). 1.5x the beam
+  diameter is where those cross.
+
+End to end on synthetic volumes with a dome background four times the beam:
+recovered at 100% amplitude on axis, 101% at 2 and 5 mm off, 100% at 10 mm,
+falling to 74% at 15 mm where the beam starts to meet the dosimeter edge.
+Located to better than 1 mm in every case out to 10 mm.
+
+A region found within half a beam-width of the axis is flagged, since that is
+where any residual suppression acts: shape reliable, absolute level a lower
+bound.
+
+**Shorten the pre-to-post interval anyway.** Seven weeks of ageing produced a
+uniform signal several times the beam. Subtracting it works, but a background
+that is not there cannot bias anything.
 
 ### 2026-08-19: the dosimeter is tilted, not laterally offset
 
